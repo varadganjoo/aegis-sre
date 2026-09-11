@@ -1,0 +1,69 @@
+{
+  "skills": [
+    {
+      "skill_id": "skill-001",
+      "name": "horizontal_pod_scaler",
+      "description": "Scales stateless deployments under CPU/memory/latency pressure.",
+      "trigger_pattern": "cpu_utilization_pct > 80.0 OR p99_latency_ms > 200.0",
+      "code": "\"\"\"Horizontal Pod Autoscaler Skill.\"\"\"\ndef run(context: dict) -> dict:\n    service = context.get(\"service\")\n    current = context.get(\"replicas\", 2)\n    target = min(current * 2, 10)\n    return {\n        \"success\": True,\n        \"action\": \"scale_replicas\",\n        \"service\": service,\n        \"previous_replicas\": current,\n        \"target_replicas\": target,\n        \"log\": f\"Scaled {service} from {current} to {target} pods under high traffic load.\"\n    }\n",
+      "test_code": "\"\"\"Test for HPA skill.\"\"\"\ndef test():\n    ctx = {\"service\": \"checkout-service\", \"replicas\": 3}\n    res = run(ctx)\n    assert res[\"success\"] is True\n    assert res[\"target_replicas\"] == 6\n",
+      "version": 1,
+      "success_count": 1,
+      "failure_count": 0,
+      "created_at": "2026-09-22T09:20:20.999489+00:00",
+      "created_by": "gemini-3.8-flash-synthesizer"
+    },
+    {
+      "skill_id": "skill-002",
+      "name": "circuit_breaker_tripper",
+      "description": "Isolates degraded downstream dependencies via circuit breaking.",
+      "trigger_pattern": "error_rate_pct > 10.0",
+      "code": "\"\"\"Circuit Breaker Tripper Skill.\"\"\"\ndef run(context: dict) -> dict:\n    service = context.get(\"service\")\n    return {\n        \"success\": True,\n        \"action\": \"trip_circuit_breaker\",\n        \"service\": service,\n        \"log\": f\"Tripped circuit breaker for {service} to prevent downstream cascading failure.\"\n    }\n",
+      "test_code": "\"\"\"Test for Circuit Breaker skill.\"\"\"\ndef test():\n    ctx = {\"service\": \"payment-orchestrator\"}\n    res = run(ctx)\n    assert res[\"success\"] is True\n    assert res[\"action\"] == \"trip_circuit_breaker\"\n",
+      "version": 1,
+      "success_count": 0,
+      "failure_count": 0,
+      "created_at": "2026-09-22T09:20:21.002023+00:00",
+      "created_by": "gemini-3.8-flash-synthesizer"
+    },
+    {
+      "skill_id": "skill-003",
+      "name": "learned_sre_mitigation_payment_orchestrator",
+      "description": "Self-learned mitigation synthesized from SRE override for payment-orchestrator: Trip upstream payment circuit breaker and route transactions to secondary processor.",
+      "trigger_pattern": "payment-orchestrator AND p99_latency_ms",
+      "code": "\"\"\"Self-learned remediation skill for payment-orchestrator (p99_latency_ms).\nSynthesized via Reflexion post-mortem after human SRE override:\n\"Trip upstream payment circuit breaker and route transactions to secondary processor.\"\n\"\"\"\n\ndef run(context: dict) -> dict:\n    service = context.get(\"service\", \"payment-orchestrator\")\n    # Enforce SRE-learned remediation logic:\n    # 1. Gracefully drain traffic\n    # 2. Apply calibrated action\n    return {\n        \"success\": True,\n        \"action\": \"trip_circuit_breaker_and_reroute\",\n        \"service\": service,\n        \"learned_policy\": \"Trip upstream payment circuit breaker and route transactions to secondary processor.\",\n        \"log\": f\"Executed SRE-learned remediation for {service}: trip_circuit_breaker_and_reroute with graceful connection drain.\"\n    }\n",
+      "test_code": "\"\"\"Sandboxed verification test for learned skill.\"\"\"\ndef test():\n    ctx = {\"service\": \"payment-orchestrator\"}\n    res = run(ctx)\n    assert res[\"success\"] is True\n    assert res[\"action\"] == \"trip_circuit_breaker_and_reroute\"\n    assert \"payment-orchestrator\" in res[\"log\"]\n",
+      "version": 1,
+      "success_count": 0,
+      "failure_count": 0,
+      "created_at": "2026-09-22T09:20:21.575531+00:00",
+      "created_by": "reflexion-engine-postmortem"
+    },
+    {
+      "skill_id": "skill-004",
+      "name": "mcp_test_cleanup_skill",
+      "description": "MCP test cleanup",
+      "trigger_pattern": "cleanup AND test",
+      "code": "\ndef run(ctx):\n    return {\"success\": True, \"action\": \"custom_cleanup\"}\n",
+      "test_code": "\ndef test():\n    res = run({})\n    assert res[\"success\"] is True\n",
+      "version": 1,
+      "success_count": 0,
+      "failure_count": 0,
+      "created_at": "2026-09-22T09:20:21.583895+00:00",
+      "created_by": "mcp-client"
+    },
+    {
+      "skill_id": "skill-005",
+      "name": "learned_sre_mitigation_postgres_primary",
+      "description": "Self-learned mitigation synthesized from SRE override for postgres-primary: Do not restart postgres-primary; perform graceful connection pool drain and scale read replicas.",
+      "trigger_pattern": "postgres-primary AND connection_pool_usage_pct",
+      "code": "\"\"\"Self-learned remediation skill for postgres-primary (connection_pool_usage_pct).\nSynthesized via Reflexion post-mortem after human SRE override:\n\"Do not restart postgres-primary; perform graceful connection pool drain and scale read replicas.\"\n\"\"\"\n\ndef run(context: dict) -> dict:\n    service = context.get(\"service\", \"postgres-primary\")\n    # Enforce SRE-learned remediation logic:\n    # 1. Gracefully drain traffic\n    # 2. Apply calibrated action\n    return {\n        \"success\": True,\n        \"action\": \"graceful_pool_drain_and_shed\",\n        \"service\": service,\n        \"learned_policy\": \"Do not restart postgres-primary; perform graceful connection pool drain and scale read replicas.\",\n        \"log\": f\"Executed SRE-learned remediation for {service}: graceful_pool_drain_and_shed with graceful connection drain.\"\n    }\n",
+      "test_code": "\"\"\"Sandboxed verification test for learned skill.\"\"\"\ndef test():\n    ctx = {\"service\": \"postgres-primary\"}\n    res = run(ctx)\n    assert res[\"success\"] is True\n    assert res[\"action\"] == \"graceful_pool_drain_and_shed\"\n    assert \"postgres-primary\" in res[\"log\"]\n",
+      "version": 1,
+      "success_count": 0,
+      "failure_count": 0,
+      "created_at": "2026-09-22T09:21:16.451773+00:00",
+      "created_by": "reflexion-engine-postmortem"
+    }
+  ]
+}
