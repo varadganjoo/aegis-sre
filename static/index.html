@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AEGIS-SRE // Autonomous Cloud Incident Command & Telemetry</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            ops: {
+              black: '#050508',
+              surface: '#0B0F19',
+              panel: '#0F1523',
+              border: '#1E293B',
+              cyan: '#00F0FF',
+              cyanDim: '#00A3B4',
+              amber: '#FFB703',
+              crimson: '#FF0055',
+              green: '#00FF66',
+              dim: '#64748B'
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { background-color: #050508; color: #E2E8F0; font-family: "JetBrains Mono", Consolas, Monaco, monospace; }
+    .scanline {
+      background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.03));
+      background-size: 100% 2px, 3px 100%;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col bg-ops-black text-slate-200">
+
+  <!-- TOP MISSION CONTROL STRIP -->
+  <header class="bg-ops-surface border-b border-ops-cyan/30 px-6 py-3 flex items-center justify-between sticky top-0 z-50">
+    <div class="flex items-center space-x-4">
+      <div class="h-9 w-9 bg-ops-cyan/10 border border-ops-cyan/50 flex items-center justify-center text-ops-cyan font-black text-lg">
+        <i class="fa-solid fa-terminal"></i>
+      </div>
+      <div>
+        <div class="flex items-center space-x-2">
+          <span class="font-black text-base tracking-widest text-white">AEGIS<span class="text-ops-cyan">//OPS</span></span>
+          <span class="px-2 py-0.5 text-[10px] font-bold bg-ops-cyan/10 text-ops-cyan border border-ops-cyan/40">AUTONOMOUS SRE</span>
+          <span class="px-2 py-0.5 text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">SYSTEM 2 ONLINE</span>
+        </div>
+        <p class="text-[10px] text-slate-400">Kubernetes Self-Learning Incident Mitigation Engine</p>
+      </div>
+    </div>
+
+    <!-- Central Telemetry Radar -->
+    <div class="flex items-center space-x-6 text-xs">
+      <div class="flex items-center space-x-2 bg-ops-black px-3 py-1.5 border border-ops-border">
+        <span class="h-2 w-2 rounded-full bg-ops-green animate-pulse"></span>
+        <span class="text-slate-400">CLUSTER:</span>
+        <span class="text-white font-bold">us-east-1-prod</span>
+      </div>
+      <div class="flex items-center space-x-2 bg-ops-black px-3 py-1.5 border border-ops-border">
+        <span class="text-slate-400">P99 LATENCY:</span>
+        <span class="text-ops-amber font-bold" id="telemetryP99">840ms [HIGH]</span>
+      </div>
+      <div class="flex items-center space-x-2 bg-ops-black px-3 py-1.5 border border-ops-border">
+        <span class="text-slate-400">UPTIME:</span>
+        <span class="text-ops-cyan font-bold">99.982%</span>
+      </div>
+    </div>
+
+    <!-- Active Outage Counter -->
+    <div class="flex items-center space-x-3 text-xs">
+      <div class="bg-ops-crimson/10 px-3 py-1.5 border border-ops-crimson/40 text-ops-crimson font-bold flex items-center space-x-2">
+        <i class="fa-solid fa-triangle-exclamation animate-bounce"></i>
+        <span>INC-8491: ACTIVE 504 OUTAGE</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- NAVIGATION & INCIDENT BAR -->
+  <div class="bg-ops-surface/80 border-b border-ops-border px-6 py-2 flex items-center justify-between text-xs">
+    <nav class="flex space-x-1">
+      <button onclick="switchTab('warroom')" id="tab_warroom" class="px-3 py-1.5 font-bold uppercase tracking-wider transition bg-ops-cyan text-ops-black">
+        [F1] War Room
+      </button>
+      <button onclick="switchTab('topology')" id="tab_topology" class="px-3 py-1.5 font-bold uppercase tracking-wider transition text-slate-400 hover:text-white hover:bg-ops-panel">
+        [F2] Service Mesh
+      </button>
+      <button onclick="switchTab('blastradius')" id="tab_blastradius" class="px-3 py-1.5 font-bold uppercase tracking-wider transition text-slate-400 hover:text-white hover:bg-ops-panel">
+        [F3] Blast Radius
+      </button>
+      <button onclick="switchTab('skillbank')" id="tab_skillbank" class="px-3 py-1.5 font-bold uppercase tracking-wider transition text-slate-400 hover:text-white hover:bg-ops-panel">
+        [F4] Dynamic Skills
+      </button>
+      <button onclick="switchTab('postmortems')" id="tab_postmortems" class="px-3 py-1.5 font-bold uppercase tracking-wider transition text-slate-400 hover:text-white hover:bg-ops-panel">
+        [F5] Reflexion Memory
+      </button>
+    </nav>
+
+    <!-- Incident Switcher -->
+    <div class="flex items-center space-x-2">
+      <span class="text-[10px] text-slate-500 uppercase">Select Outage:</span>
+      <button onclick="selectIncident('INC-8491')" id="btn_INC-8491" class="px-2.5 py-1 bg-ops-panel border border-ops-cyan text-ops-cyan text-[11px] font-bold">
+        INC-8491 (Payment 504)
+      </button>
+      <button onclick="selectIncident('INC-8492')" id="btn_INC-8492" class="px-2.5 py-1 bg-ops-panel border border-ops-border text-slate-400 text-[11px] hover:border-slate-500">
+        INC-8492 (Postgres Pool)
+      </button>
+      <button onclick="selectIncident('INC-8493')" id="btn_INC-8493" class="px-2.5 py-1 bg-ops-panel border border-ops-border text-slate-400 text-[11px] hover:border-slate-500">
+        INC-8493 (Gateway CPU)
+      </button>
+    </div>
+  </div>
+
+  <!-- WORKSPACE -->
+  <main class="flex-1 p-6 space-y-6 overflow-y-auto">
+
+    <!-- PAGE 1: INCIDENT WAR ROOM -->
+    <section id="page_warroom" class="space-y-6">
+      <div class="grid grid-cols-3 gap-6">
+        <!-- Live Alert Telemetry -->
+        <div class="bg-ops-panel border border-ops-border p-5 space-y-4">
+          <div class="flex justify-between items-center pb-2 border-b border-ops-border">
+            <span class="text-xs font-bold text-ops-cyan uppercase tracking-widest">&gt; Active Telemetry</span>
+            <span class="px-1.5 py-0.5 text-[10px] bg-ops-crimson text-white font-bold">CRITICAL</span>
+          </div>
+
+          <div class="space-y-3 text-xs">
+            <div class="p-3 bg-ops-black border border-ops-border space-y-1">
+              <span class="text-[10px] text-slate-500">SERVICE</span>
+              <p class="font-bold text-white">payment-orchestrator-v2</p>
+            </div>
+            <div class="p-3 bg-ops-black border border-ops-border space-y-1">
+              <span class="text-[10px] text-slate-500">FAILURE SIGNATURE</span>
+              <p class="font-bold text-ops-crimson">HTTP 504 Gateway Timeout (P99 &gt; 840ms)</p>
+            </div>
+            <div class="p-3 bg-ops-black border border-ops-border space-y-1">
+              <span class="text-[10px] text-slate-500">ROOT CAUSE HYPOTHESIS (System 2 Gemini 3.8 Flash)</span>
+              <p class="text-slate-300">Stale connection pool exhaustion in downstream postgres-replica caused thread starvation in payment-orchestrator worker pods.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Terminal CLI Stream -->
+        <div class="col-span-2 bg-ops-black border border-ops-cyan/30 p-5 space-y-3">
+          <div class="flex justify-between items-center pb-2 border-b border-ops-border">
+            <span class="text-xs font-bold text-ops-cyan uppercase tracking-widest">&gt;_ Live Execution Console (root@aegis-sre-core)</span>
+            <span class="text-[10px] text-slate-500">LangGraph interrupt() Gate Active</span>
+          </div>
+
+          <div class="p-4 bg-[#030305] border border-ops-border text-xs text-ops-cyan/90 leading-relaxed font-mono space-y-2 h-72 overflow-y-auto">
+            <p><span class="text-slate-500">[03:41:02]</span> <span class="text-ops-amber">&gt;&gt; INGESTION:</span> Alert received: payment-orchestrator P99 latency breached 800ms threshold.</p>
+            <p><span class="text-slate-500">[03:41:03]</span> <span class="text-ops-cyan">&gt;&gt; SYSTEM 1:</span> Querying dynamic SkillBank for matching fingerprint... <span class="text-ops-amber">[NO DIRECT MATCH]</span></p>
+            <p><span class="text-slate-500">[03:41:04]</span> <span class="text-ops-green">&gt;&gt; SYSTEM 2:</span> Escalating to Gemini 3.8 Flash causal reasoner across microservice DAG...</p>
+            <p><span class="text-slate-500">[03:41:05]</span> <span class="text-white">&gt;&gt; DIAGNOSIS:</span> payment-orchestrator thread starvation due to postgres connection pool lock.</p>
+            <p><span class="text-slate-500">[03:41:06]</span> <span class="text-ops-amber">&gt;&gt; PROPOSAL:</span> Trigger circuit breaker on payment-orchestrator &amp; restart downstream read-replica pool.</p>
+            <p><span class="text-slate-500">[03:41:07]</span> <span class="text-ops-cyan">&gt;&gt; BLAST RADIUS:</span> Impact 2 pods (6.2% of cluster traffic). Safe threshold: APPROVED.</p>
+            <p><span class="text-slate-500">[03:41:08]</span> <span class="text-ops-crimson font-bold">&gt;&gt; HITL CHECKPOINT:</span> Execution paused at LangGraph interrupt(). Awaiting human SRE sign-off.</p>
+          </div>
+
+          <!-- SRE Human Control Actions -->
+          <div class="flex items-center justify-between pt-2">
+            <div class="text-xs text-slate-400">
+              <span class="text-ops-cyan">&gt; Operator:</span> Varad Ganjoo (Lead SRE)
+            </div>
+            <div class="flex space-x-2">
+              <button onclick="overrideSRE()" class="px-4 py-2 border border-ops-amber text-ops-amber font-bold text-xs uppercase hover:bg-ops-amber/10">
+                Override Proposal
+              </button>
+              <button onclick="approveSRE()" id="btn-approve-sre" class="px-5 py-2 bg-ops-cyan text-ops-black font-black text-xs uppercase hover:bg-ops-cyanDim">
+                Approve &amp; Remediate
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PAGE 2: SERVICE MESH TOPOLOGY -->
+    <section id="page_topology" class="hidden space-y-6">
+      <div class="bg-ops-panel border border-ops-border p-6 space-y-4">
+        <div class="flex justify-between items-center pb-2 border-b border-ops-border">
+          <span class="text-xs font-bold text-ops-cyan uppercase tracking-widest">&gt; Microservice Dependency DAG &amp; Cascading Blast Graph</span>
+          <span class="text-xs text-slate-400">6 Nodes • 8 Edges</span>
+        </div>
+
+        <div class="grid grid-cols-4 gap-4 text-xs">
+          <div class="p-4 bg-ops-black border border-ops-border space-y-1">
+            <span class="text-[10px] text-slate-500">API GATEWAY</span>
+            <p class="font-bold text-white">ingress-nginx</p>
+            <p class="text-[11px] text-ops-green">Status: Normal (200 OK)</p>
+          </div>
+          <div class="p-4 bg-ops-black border border-ops-crimson space-y-1">
+            <span class="text-[10px] text-ops-crimson font-bold">DOWNSTREAM SERVICE [FAILING]</span>
+            <p class="font-bold text-ops-crimson">payment-orchestrator</p>
+            <p class="text-[11px] text-ops-crimson">Status: 504 Timeouts (P99 840ms)</p>
+          </div>
+          <div class="p-4 bg-ops-black border border-ops-amber space-y-1">
+            <span class="text-[10px] text-ops-amber font-bold">DATABASE LAYER [STARVED]</span>
+            <p class="font-bold text-white">postgres-replica-01</p>
+            <p class="text-[11px] text-ops-amber">Pool: 98/100 Connections Used</p>
+          </div>
+          <div class="p-4 bg-ops-black border border-ops-border space-y-1">
+            <span class="text-[10px] text-slate-500">CACHE LAYER</span>
+            <p class="font-bold text-white">redis-cluster-cache</p>
+            <p class="text-[11px] text-ops-green">Hit Ratio: 94.2%</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PAGE 3: BLAST RADIUS GUARD -->
+    <section id="page_blastradius" class="hidden space-y-6">
+      <div class="bg-ops-panel border border-ops-border p-6 space-y-4">
+        <div class="flex justify-between items-center pb-2 border-b border-ops-border">
+          <span class="text-xs font-bold text-ops-cyan uppercase tracking-widest">&gt; Deterministic Blast Radius Safety Guardrail</span>
+          <span class="px-2 py-0.5 text-[10px] bg-ops-green/10 text-ops-green border border-ops-green/40">INVARIANT ENFORCED</span>
+        </div>
+
+        <div id="blastAlertContainer" class="p-4 bg-ops-black border border-ops-crimson/50 text-xs space-y-2">
+          <div class="flex items-center space-x-2 text-ops-crimson font-bold">
+            <i class="fa-solid fa-ban"></i>
+            <span>DETERMINISTIC INVARIANT: STATEFUL POD RESTART INTERCEPTED</span>
+          </div>
+          <p class="text-slate-300">Naive restart on <code>postgres-primary</code> was physically blocked by the Blast Radius Guard. Direct restarts on primary database nodes are strictly prohibited to prevent split-brain state and uncommitted transaction loss.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- PAGE 4: DYNAMIC SKILLBANK -->
+    <section id="page_skillbank" class="hidden space-y-6">
+      <div class="bg-ops-panel border border-ops-border p-6 space-y-4">
+        <div class="flex justify-between items-center pb-2 border-b border-ops-border">
+          <span class="text-xs font-bold text-ops-cyan uppercase tracking-widest">&gt; Dynamic SkillBank // Code-as-Skill Sandbox</span>
+          <span class="text-xs text-ops-cyan">4 Verified Executable Skills</span>
+        </div>
+
+        <div class="p-4 bg-ops-black border border-ops-border font-mono text-xs text-slate-300 space-y-1">
+          <span class="text-ops-amber text-[10px] font-bold"># Synthesized Skill: learned_sre_mitigation_payment_orchestrator.py</span>
+          <p class="text-ops-cyan">def execute_remediation(cluster_context: dict) -&gt; dict:</p>
+          <p class="pl-4">"""Autonomously synthesized Python skill with AST security validation."""</p>
+          <p class="pl-4">trip_circuit_breaker(service="payment-orchestrator", threshold=0.15)</p>
+          <p class="pl-4">recycle_connection_pool(target="postgres-replica-01", grace_period_sec=5)</p>
+          <p class="pl-4">return {"status": "SUCCESS", "traffic_preserved": 0.938}</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- PAGE 5: REFLEXION & INSTITUTIONAL MEMORY -->
+    <section id="page_postmortems" class="hidden space-y-6">
+      <div class="bg-ops-panel border border-ops-border p-6 space-y-4">
+        <div class="flex justify-between items-center pb-2 border-b border-ops-border">
+          <span class="text-xs font-bold text-ops-cyan uppercase tracking-widest">&gt; Reflexion Episodic Memory (ExpeL Kernel)</span>
+          <span class="text-xs text-ops-cyan">Zero Repeated Outages</span>
+        </div>
+
+        <div class="p-4 bg-ops-black border border-ops-border space-y-2 text-xs">
+          <span class="text-ops-amber font-bold">Institutional Invariant Registered from SRE Override:</span>
+          <p class="text-slate-300">"When payment-orchestrator times out during peak hours (&gt;1000 RPS), NEVER restart the primary DB node. Always trip the circuit breaker and recycle replica connection pool first."</p>
+          <div class="flex items-center space-x-4 text-[11px] text-slate-500 pt-1">
+            <span>Author: Varad Ganjoo (Lead SRE)</span>
+            <span>•</span>
+            <span>Timestamp: 2026-09-15 19:19:40</span>
+            <span>•</span>
+            <span class="text-ops-green font-bold">Permanent Policy Active</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    function switchTab(tabId) {
+      const tabs = ['warroom', 'topology', 'blastradius', 'skillbank', 'postmortems'];
+      tabs.forEach(t => {
+        const page = document.getElementById('page_' + t);
+        const btn = document.getElementById('tab_' + t);
+        if (t === tabId) {
+          page.classList.remove('hidden');
+          btn.className = 'px-3 py-1.5 font-bold uppercase tracking-wider transition bg-ops-cyan text-ops-black';
+        } else {
+          page.classList.add('hidden');
+          btn.className = 'px-3 py-1.5 font-bold uppercase tracking-wider transition text-slate-400 hover:text-white hover:bg-ops-panel';
+        }
+      });
+    }
+
+    function selectIncident(incId) {
+      alert('Switching active incident stream to: ' + incId);
+    }
+
+    function approveSRE() {
+      alert('SRE Authorization Confirmed. Resuming LangGraph state machine via Command(resume)... Remediation executed.');
+    }
+
+    function overrideSRE() {
+      alert('SRE Override triggered. Escalating to Reflexion engine for institutional policy synthesis.');
+    }
+  </script>
+</body>
+</html>
