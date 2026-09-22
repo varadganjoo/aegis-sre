@@ -155,6 +155,50 @@ def test():
         visitor.visit(tree)
         return visitor.violations
 
+    @staticmethod
+    def _get_sanitized_env() -> Dict[str, str]:
+        """Returns a sanitized environment dictionary for isolated skill execution.
+        Strips API keys, tokens, credentials, and sensitive secrets to prevent
+        synthesized code from accessing parent credentials.
+        """
+        safe_keys = {
+            "PATH",
+            "SYSTEMROOT",
+            "SYSTEMDRIVE",
+            "TEMP",
+            "TMP",
+            "COMSPEC",
+            "PATHEXT",
+            "WINDIR",
+            "PYTHONPATH",
+            "PYTHONHOME",
+        }
+        sensitive_patterns = (
+            "KEY",
+            "TOKEN",
+            "SECRET",
+            "AUTH",
+            "PASS",
+            "CREDENTIAL",
+            "GEMINI",
+            "OPENAI",
+            "ANTHROPIC",
+            "AWS",
+            "AZURE",
+            "GITHUB",
+            "GH_",
+        )
+        sanitized = {}
+        for k, v in os.environ.items():
+            k_upper = k.upper()
+            if k_upper in safe_keys:
+                sanitized[k] = v
+            elif any(pat in k_upper for pat in sensitive_patterns):
+                continue
+            else:
+                sanitized[k] = v
+        return sanitized
+
     def run_sandbox_tests(self, code: str, test_code: str) -> bool:
         """Executes test_code against code in an isolated execution sandbox subprocess."""
         test_runner_script = f"""import sys
@@ -177,6 +221,7 @@ if 'test' in globals() and callable(globals()['test']):
                 capture_output=True,
                 text=True,
                 timeout=5,
+                env=self._get_sanitized_env(),
             )
             if proc.returncode != 0:
                 logger.error("Sandbox test failed (exit code %d): %s\n%s", proc.returncode, proc.stdout, proc.stderr)
@@ -275,6 +320,7 @@ sys.stdout.write(json.dumps(result))
                 capture_output=True,
                 text=True,
                 timeout=10,
+                env=self._get_sanitized_env(),
             )
             if proc.returncode != 0:
                 raise RuntimeError(f"Skill execution failed (exit code {proc.returncode}): {proc.stderr}")

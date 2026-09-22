@@ -98,3 +98,36 @@ def test():
     out = skill_bank.execute_skill("test_drain_skill", {"service": "test-svc"})
     assert out["success"] is True
     assert "Drained connections for test-svc" in out["log"]
+
+
+def test_subprocess_strips_sensitive_env_vars(skill_bank, monkeypatch):
+    """Security Invariant: API keys and secrets in parent environment are not visible in subprocess."""
+    monkeypatch.setenv("GEMINI_API_KEY", "secret-test-key-12345")
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-openai-key")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret-aws-key")
+
+    code = """
+import os
+def run(ctx):
+    leaked = [k for k in os.environ if any(s in k.upper() for s in ["KEY", "SECRET", "GEMINI", "OPENAI"])]
+    return {"success": True, "leaked": leaked}
+"""
+    test_code = """
+def test():
+    res = run({})
+    assert len(res["leaked"]) == 0
+"""
+    passed = skill_bank.run_sandbox_tests(code, test_code)
+    assert passed is True
+
+    skill_bank.register_skill(
+        name="test_env_isolation",
+        description="Verifies environment isolation",
+        trigger_pattern="isolation",
+        code=code,
+        test_code=test_code,
+    )
+    result = skill_bank.execute_skill("test_env_isolation", {})
+    assert result["success"] is True
+    assert result["leaked"] == []
+
