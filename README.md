@@ -160,3 +160,10 @@ Open **[http://127.0.0.1:8020](http://127.0.0.1:8020)** in your browser.
 ```bash
 python -m mcp_server.server
 ```
+
+---
+
+## Engineering Attribution & AI Pair-Programming
+
+This repository was developed with Gemini and Claude as AI pair-programming assistants. Architectural design, blast-radius topological analysis, Reflexion memory loop, sandboxed execution runtime, and verification suites were architected and implemented by **Varad Ganjoo**.
+

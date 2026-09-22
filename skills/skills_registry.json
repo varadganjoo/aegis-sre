@@ -8,7 +8,7 @@
       "code": "\"\"\"Horizontal Pod Autoscaler Skill.\"\"\"\ndef run(context: dict) -> dict:\n    service = context.get(\"service\")\n    current = context.get(\"replicas\", 2)\n    target = min(current * 2, 10)\n    return {\n        \"success\": True,\n        \"action\": \"scale_replicas\",\n        \"service\": service,\n        \"previous_replicas\": current,\n        \"target_replicas\": target,\n        \"log\": f\"Scaled {service} from {current} to {target} pods under high traffic load.\"\n    }\n",
       "test_code": "\"\"\"Test for HPA skill.\"\"\"\ndef test():\n    ctx = {\"service\": \"checkout-service\", \"replicas\": 3}\n    res = run(ctx)\n    assert res[\"success\"] is True\n    assert res[\"target_replicas\"] == 6\n",
       "version": 1,
-      "success_count": 1,
+      "success_count": 3,
       "failure_count": 0,
       "created_at": "2026-09-22T09:20:20.999489+00:00",
       "created_by": "gemini-3.8-flash-synthesizer"
@@ -27,7 +27,7 @@
       "created_by": "gemini-3.8-flash-synthesizer"
     },
     {
-      "skill_id": "skill-003",
+      "skill_id": "skill-006",
       "name": "learned_sre_mitigation_payment_orchestrator",
       "description": "Self-learned mitigation synthesized from SRE override for payment-orchestrator: Trip upstream payment circuit breaker and route transactions to secondary processor.",
       "trigger_pattern": "payment-orchestrator AND p99_latency_ms",
@@ -36,11 +36,11 @@
       "version": 1,
       "success_count": 0,
       "failure_count": 0,
-      "created_at": "2026-09-22T09:20:21.575531+00:00",
+      "created_at": "2026-09-22T10:08:37.639194+00:00",
       "created_by": "reflexion-engine-postmortem"
     },
     {
-      "skill_id": "skill-004",
+      "skill_id": "skill-006",
       "name": "mcp_test_cleanup_skill",
       "description": "MCP test cleanup",
       "trigger_pattern": "cleanup AND test",
@@ -49,7 +49,7 @@
       "version": 1,
       "success_count": 0,
       "failure_count": 0,
-      "created_at": "2026-09-22T09:20:21.583895+00:00",
+      "created_at": "2026-09-22T10:08:37.755100+00:00",
       "created_by": "mcp-client"
     },
     {

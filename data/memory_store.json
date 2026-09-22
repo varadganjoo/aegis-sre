@@ -90,6 +90,96 @@
         "timestamp": "2026-09-22T09:21:16.453333+00:00"
       },
       "created_at": "2026-09-22T09:21:16.450621+00:00"
+    },
+    {
+      "incident_id": "INC-OVERRIDE",
+      "title": "Incident: CRITICAL on payment-orchestrator (p99_latency_ms)",
+      "alert": {
+        "alert_id": "ALT-OVERRIDE-01",
+        "service": "payment-orchestrator",
+        "metric": "p99_latency_ms",
+        "value": 1800.0,
+        "threshold": 300.0,
+        "severity": "critical",
+        "description": "Payment orchestrator p99 latency surge.",
+        "timestamp": "2026-09-22T10:07:02.318793+00:00"
+      },
+      "cognition_mode": "system1_fast_path",
+      "root_cause": "Known metric signature matching skill 'horizontal_pod_scaler'.",
+      "proposed_action": {
+        "action_id": "act-ALT-OVERRIDE-01",
+        "action_type": "execute_custom_skill",
+        "target_service": "payment-orchestrator",
+        "parameters": {
+          "skill_name": "horizontal_pod_scaler"
+        },
+        "risk_level": "low",
+        "rationale": "System 1 fast-path execution of verified skill 'horizontal_pod_scaler'.",
+        "rollback_plan": "Revert state changes applied by horizontal_pod_scaler.",
+        "skill_name": "horizontal_pod_scaler"
+      },
+      "sre_approved": false,
+      "sre_override_notes": "Trip upstream payment circuit breaker and route transactions to secondary processor.",
+      "execution_result": "SRE Overrode proposal: Trip upstream payment circuit breaker and route transactions to secondary processor.. Executed: trip_circuit_breaker_and_reroute",
+      "reflexion": {
+        "incident_id": "INC-OVERRIDE",
+        "alert_summary": "CRITICAL: payment-orchestrator p99_latency_ms=1800.0",
+        "initial_hypothesis": "Known metric signature matching skill 'horizontal_pod_scaler'.",
+        "proposed_action": "execute_custom_skill",
+        "was_overridden": true,
+        "human_override_reason": "Trip upstream payment circuit breaker and route transactions to secondary processor.",
+        "applied_action": "trip_circuit_breaker_and_reroute",
+        "root_cause_distillation": "SRE Override on payment-orchestrator: The agent proposed 'execute_custom_skill', but human SRE intervened: 'Trip upstream payment circuit breaker and route transactions to secondary processor.'. Human executed 'trip_circuit_breaker_and_reroute'.",
+        "extracted_invariant": "For payment-orchestrator with p99_latency_ms anomalies: Trip upstream payment circuit breaker and route transactions to secondary processor.. Do not use 'execute_custom_skill' directly.",
+        "synthesized_skill_name": "learned_sre_mitigation_payment_orchestrator",
+        "timestamp": "2026-09-22T10:07:02.324978+00:00"
+      },
+      "created_at": "2026-09-22T10:07:02.322966+00:00"
+    },
+    {
+      "incident_id": "INC-OVERRIDE",
+      "title": "Incident: CRITICAL on payment-orchestrator (p99_latency_ms)",
+      "alert": {
+        "alert_id": "ALT-OVERRIDE-01",
+        "service": "payment-orchestrator",
+        "metric": "p99_latency_ms",
+        "value": 1800.0,
+        "threshold": 300.0,
+        "severity": "critical",
+        "description": "Payment orchestrator p99 latency surge.",
+        "timestamp": "2026-09-22T10:08:37.584306+00:00"
+      },
+      "cognition_mode": "system1_fast_path",
+      "root_cause": "Known metric signature matching skill 'horizontal_pod_scaler'.",
+      "proposed_action": {
+        "action_id": "act-ALT-OVERRIDE-01",
+        "action_type": "execute_custom_skill",
+        "target_service": "payment-orchestrator",
+        "parameters": {
+          "skill_name": "horizontal_pod_scaler"
+        },
+        "risk_level": "low",
+        "rationale": "System 1 fast-path execution of verified skill 'horizontal_pod_scaler'.",
+        "rollback_plan": "Revert state changes applied by horizontal_pod_scaler.",
+        "skill_name": "horizontal_pod_scaler"
+      },
+      "sre_approved": false,
+      "sre_override_notes": "Trip upstream payment circuit breaker and route transactions to secondary processor.",
+      "execution_result": "SRE Overrode proposal: Trip upstream payment circuit breaker and route transactions to secondary processor.. Executed: trip_circuit_breaker_and_reroute",
+      "reflexion": {
+        "incident_id": "INC-OVERRIDE",
+        "alert_summary": "CRITICAL: payment-orchestrator p99_latency_ms=1800.0",
+        "initial_hypothesis": "Known metric signature matching skill 'horizontal_pod_scaler'.",
+        "proposed_action": "execute_custom_skill",
+        "was_overridden": true,
+        "human_override_reason": "Trip upstream payment circuit breaker and route transactions to secondary processor.",
+        "applied_action": "trip_circuit_breaker_and_reroute",
+        "root_cause_distillation": "SRE Override on payment-orchestrator: The agent proposed 'execute_custom_skill', but human SRE intervened: 'Trip upstream payment circuit breaker and route transactions to secondary processor.'. Human executed 'trip_circuit_breaker_and_reroute'.",
+        "extracted_invariant": "For payment-orchestrator with p99_latency_ms anomalies: Trip upstream payment circuit breaker and route transactions to secondary processor.. Do not use 'execute_custom_skill' directly.",
+        "synthesized_skill_name": "learned_sre_mitigation_payment_orchestrator",
+        "timestamp": "2026-09-22T10:08:37.640195+00:00"
+      },
+      "created_at": "2026-09-22T10:08:37.588487+00:00"
     }
   ],
   "invariants": [

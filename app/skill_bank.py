@@ -6,6 +6,7 @@ import ast
 import json
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -155,22 +156,34 @@ def test():
         return visitor.violations
 
     def run_sandbox_tests(self, code: str, test_code: str) -> bool:
-        """Executes test_code against code in an isolated execution sandbox."""
-        sandbox_scope: Dict[str, Any] = {"__name__": "__sandbox__"}
-        try:
-            # 1. Execute the main skill code
-            exec(code, sandbox_scope)
-            if "run" not in sandbox_scope or not callable(sandbox_scope["run"]):
-                logger.error("Synthesized skill lacks callable 'run(context)' entrypoint.")
-                return False
+        """Executes test_code against code in an isolated execution sandbox subprocess."""
+        test_runner_script = f"""import sys
 
-            # 2. Execute test code
-            exec(test_code, sandbox_scope)
-            if "test" in sandbox_scope and callable(sandbox_scope["test"]):
-                sandbox_scope["test"]()
+# Skill implementation
+{code}
+
+if 'run' not in globals() or not callable(globals()['run']):
+    sys.exit(2)
+
+# Skill unit test
+{test_code}
+
+if 'test' in globals() and callable(globals()['test']):
+    globals()['test']()
+"""
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-I", "-c", test_runner_script],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if proc.returncode != 0:
+                logger.error("Sandbox test failed (exit code %d): %s\n%s", proc.returncode, proc.stdout, proc.stderr)
+                return False
             return True
-        except AssertionError as e:
-            logger.error("Sandbox test assertion failed: %s", e)
+        except subprocess.TimeoutExpired:
+            logger.error("Sandbox test execution timed out (5s limit).")
             return False
         except Exception as e:
             logger.error("Sandbox execution error: %s", e)
@@ -237,14 +250,41 @@ def test():
         return None
 
     def execute_skill(self, name: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Executes a registered skill with the given context."""
+        """Executes a registered skill in an isolated subprocess with timeout."""
         skill = self.get_skill(name)
         if not skill:
             raise KeyError(f"Skill '{name}' not found in registry.")
 
-        scope: Dict[str, Any] = {}
-        exec(skill.code, scope)
-        result = scope["run"](context)
-        skill.success_count += 1
-        self._persist_registry()
-        return result
+        runner_script = f"""import sys
+import json
+
+{skill.code}
+
+if 'run' not in globals() or not callable(globals()['run']):
+    sys.stderr.write("Skill lacks callable 'run(context)' entrypoint.")
+    sys.exit(2)
+
+input_data = json.loads(sys.stdin.read())
+result = globals()['run'](input_data)
+sys.stdout.write(json.dumps(result))
+"""
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-I", "-c", runner_script],
+                input=json.dumps(context),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(f"Skill execution failed (exit code {proc.returncode}): {proc.stderr}")
+
+            result = json.loads(proc.stdout)
+            skill.success_count += 1
+            self._persist_registry()
+            return result
+        except subprocess.TimeoutExpired as e:
+            raise TimeoutError(f"Skill '{name}' execution timed out after 10 seconds.") from e
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Skill '{name}' did not return valid JSON output: {proc.stdout}") from e
+
