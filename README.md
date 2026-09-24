@@ -6,8 +6,6 @@
 [![Protocol: MCP](https://img.shields.io/badge/Protocol-MCP-green.svg)](https://modelcontextprotocol.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-gray.svg)](LICENSE)
 
-**Live demo:** [aegis-sre-snowy.vercel.app](https://aegis-sre-snowy.vercel.app)
-
 Aegis-SRE is an incident-response agent for a simulated microservice cluster. It matches known alert signatures to stored skills, asks an LLM to diagnose everything else, checks every proposed action against deterministic blast-radius rules, and pauses for an SRE to approve, override or reject before anything runs. When an SRE overrides or rejects a proposal, Aegis records the lesson so the next matching incident goes the way the SRE chose.
 
 > The cluster, incidents and remediations are simulated. Nothing touches real infrastructure, and the agent never writes or runs code.
