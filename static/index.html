@@ -3,304 +3,388 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AEGIS-SRE // Autonomous Cloud Incident Command & Telemetry</title>
+  <link rel="icon" href="data:," />
+  <title>Aegis | Incident Console</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/geist-sans@5/400.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/geist-sans@5/600.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/geist-mono@5/400.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/regular/style.css" />
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
   <script>
     tailwind.config = {
-      darkMode: 'class',
       theme: {
         extend: {
+          fontFamily: { sans: ['"Geist Sans"', 'system-ui', 'sans-serif'], mono: ['"Geist Mono"', 'ui-monospace', 'monospace'] },
           colors: {
             ops: {
-              black: '#050508',
-              surface: '#0B0F19',
-              panel: '#0F1523',
-              border: '#1E293B',
-              cyan: '#00F0FF',
-              cyanDim: '#00A3B4',
-              amber: '#FFB703',
-              crimson: '#FF0055',
-              green: '#00FF66',
-              dim: '#64748B'
-            }
-          }
-        }
-      }
+              bg: '#0B0E13', surface: '#11161E', raised: '#161C26', line: '#222B38',
+              text: '#E4E8EE', muted: '#8B95A5', accent: '#3BB5C4',
+              crit: '#F0505A', high: '#F2A33A', ok: '#3CCB7F',
+            },
+          },
+        },
+      },
     }
   </script>
   <style>
-    body { background-color: #050508; color: #E2E8F0; font-family: "JetBrains Mono", Consolas, Monaco, monospace; }
-    .scanline {
-      background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.03));
-      background-size: 100% 2px, 3px 100%;
-    }
+    body { background: #0B0E13; color: #E4E8EE; overflow-wrap: anywhere; } /* long metric and skill names wrap on phones */
+    .skeleton { background: #222B38; border-radius: 6px; animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: .5; } }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button:not(:disabled):active { transform: translateY(1px); }
+    :focus-visible { outline: 2px solid #3BB5C4; outline-offset: 2px; }
+    select, input, textarea { font: inherit; }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
   </style>
 </head>
-<body class="min-h-screen flex flex-col bg-ops-black text-slate-200">
-
-  <!-- TOP MISSION CONTROL STRIP -->
-  <header class="bg-ops-surface border-b border-ops-cyan/30 px-6 py-3 flex items-center justify-between sticky top-0 z-50">
-    <div class="flex items-center space-x-4">
-      <div class="h-9 w-9 bg-ops-cyan/10 border border-ops-cyan/50 flex items-center justify-center text-ops-cyan font-black text-lg">
-        <i class="fa-solid fa-terminal"></i>
+<body class="min-h-[100dvh] font-sans text-sm antialiased">
+  <header class="sticky top-0 z-10 bg-ops-bg/95 backdrop-blur border-b border-ops-line">
+    <div class="max-w-[1400px] mx-auto px-4 md:px-6 h-16 flex items-center gap-6">
+      <div class="flex items-center gap-2 shrink-0">
+        <i class="ph ph-shield-check text-2xl text-ops-accent"></i>
+        <span class="font-semibold tracking-wide">Aegis</span>
+        <span class="hidden sm:inline text-ops-muted">Incident Console</span>
       </div>
-      <div>
-        <div class="flex items-center space-x-2">
-          <span class="font-black text-base tracking-widest text-white">AEGIS<span class="text-ops-cyan">//OPS</span></span>
-          <span class="px-2 py-0.5 text-[10px] font-bold bg-ops-cyan/10 text-ops-cyan border border-ops-cyan/40">AUTONOMOUS SRE</span>
-          <span class="px-2 py-0.5 text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">SYSTEM 2 ONLINE</span>
-        </div>
-        <p class="text-[10px] text-slate-400">Kubernetes Self-Learning Incident Mitigation Engine</p>
-      </div>
-    </div>
-
-    <!-- Central Telemetry Radar -->
-    <div class="flex items-center space-x-6 text-xs">
-      <div class="flex items-center space-x-2 bg-ops-black px-3 py-1.5 border border-ops-border">
-        <span class="h-2 w-2 rounded-full bg-ops-green animate-pulse"></span>
-        <span class="text-slate-400">CLUSTER:</span>
-        <span class="text-white font-bold">us-east-1-prod</span>
-      </div>
-      <div class="flex items-center space-x-2 bg-ops-black px-3 py-1.5 border border-ops-border">
-        <span class="text-slate-400">P99 LATENCY:</span>
-        <span class="text-ops-amber font-bold" id="telemetryP99">840ms [HIGH]</span>
-      </div>
-      <div class="flex items-center space-x-2 bg-ops-black px-3 py-1.5 border border-ops-border">
-        <span class="text-slate-400">UPTIME:</span>
-        <span class="text-ops-cyan font-bold">99.982%</span>
-      </div>
-    </div>
-
-    <!-- Active Outage Counter -->
-    <div class="flex items-center space-x-3 text-xs">
-      <div class="bg-ops-crimson/10 px-3 py-1.5 border border-ops-crimson/40 text-ops-crimson font-bold flex items-center space-x-2">
-        <i class="fa-solid fa-triangle-exclamation animate-bounce"></i>
-        <span>INC-8491: ACTIVE 504 OUTAGE</span>
-      </div>
+      <nav class="flex gap-1 overflow-x-auto" id="tabs" aria-label="Sections">
+        <button data-tab="incident">Incident</button>
+        <button data-tab="topology">Topology</button>
+        <button data-tab="skills">Skills</button>
+        <button data-tab="memory">Memory</button>
+      </nav>
+      <span class="ml-auto hidden md:inline text-xs text-ops-muted font-mono" id="modelStatus"></span>
     </div>
   </header>
 
-  <!-- NAVIGATION & INCIDENT BAR -->
-  <div class="bg-ops-surface/80 border-b border-ops-border px-6 py-2 flex items-center justify-between text-xs">
-    <nav class="flex space-x-1">
-      <button onclick="switchTab('warroom')" id="tab_warroom" class="px-3 py-1.5 font-bold uppercase tracking-wider transition bg-ops-cyan text-ops-black">
-        [F1] War Room
-      </button>
-      <button onclick="switchTab('topology')" id="tab_topology" class="px-3 py-1.5 font-bold uppercase tracking-wider transition text-slate-400 hover:text-white hover:bg-ops-panel">
-        [F2] Service Mesh
-      </button>
-      <button onclick="switchTab('blastradius')" id="tab_blastradius" class="px-3 py-1.5 font-bold uppercase tracking-wider transition text-slate-400 hover:text-white hover:bg-ops-panel">
-        [F3] Blast Radius
-      </button>
-      <button onclick="switchTab('skillbank')" id="tab_skillbank" class="px-3 py-1.5 font-bold uppercase tracking-wider transition text-slate-400 hover:text-white hover:bg-ops-panel">
-        [F4] Dynamic Skills
-      </button>
-      <button onclick="switchTab('postmortems')" id="tab_postmortems" class="px-3 py-1.5 font-bold uppercase tracking-wider transition text-slate-400 hover:text-white hover:bg-ops-panel">
-        [F5] Reflexion Memory
-      </button>
-    </nav>
+  <main class="max-w-[1400px] mx-auto px-4 md:px-6 py-6 space-y-6">
+    <p class="text-xs text-ops-muted max-w-[110ch]">
+      <i class="ph ph-info text-ops-accent align-[-2px]"></i>
+      Demo cluster and incidents. Remediations are simulated and nothing touches real infrastructure. Diagnosis uses a live LLM when one is configured, otherwise deterministic rules.
+    </p>
+    <div id="loadError" role="alert" class="hidden rounded-md border border-ops-crit px-4 py-3 text-ops-crit"></div>
 
-    <!-- Incident Switcher -->
-    <div class="flex items-center space-x-2">
-      <span class="text-[10px] text-slate-500 uppercase">Select Outage:</span>
-      <button onclick="selectIncident('INC-8491')" id="btn_INC-8491" class="px-2.5 py-1 bg-ops-panel border border-ops-cyan text-ops-cyan text-[11px] font-bold">
-        INC-8491 (Payment 504)
-      </button>
-      <button onclick="selectIncident('INC-8492')" id="btn_INC-8492" class="px-2.5 py-1 bg-ops-panel border border-ops-border text-slate-400 text-[11px] hover:border-slate-500">
-        INC-8492 (Postgres Pool)
-      </button>
-      <button onclick="selectIncident('INC-8493')" id="btn_INC-8493" class="px-2.5 py-1 bg-ops-panel border border-ops-border text-slate-400 text-[11px] hover:border-slate-500">
-        INC-8493 (Gateway CPU)
-      </button>
-    </div>
-  </div>
+    <!-- INCIDENT -->
+    <section id="page_incident" class="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)] items-start">
+      <div class="space-y-2" id="incidentList">
+        <div class="skeleton h-24"></div><div class="skeleton h-24"></div><div class="skeleton h-24"></div>
+      </div>
+      <div class="space-y-6" id="runPanel"></div>
+    </section>
 
-  <!-- WORKSPACE -->
-  <main class="flex-1 p-6 space-y-6 overflow-y-auto">
-
-    <!-- PAGE 1: INCIDENT WAR ROOM -->
-    <section id="page_warroom" class="space-y-6">
-      <div class="grid grid-cols-3 gap-6">
-        <!-- Live Alert Telemetry -->
-        <div class="bg-ops-panel border border-ops-border p-5 space-y-4">
-          <div class="flex justify-between items-center pb-2 border-b border-ops-border">
-            <span class="text-xs font-bold text-ops-cyan uppercase tracking-widest">&gt; Active Telemetry</span>
-            <span class="px-1.5 py-0.5 text-[10px] bg-ops-crimson text-white font-bold">CRITICAL</span>
-          </div>
-
-          <div class="space-y-3 text-xs">
-            <div class="p-3 bg-ops-black border border-ops-border space-y-1">
-              <span class="text-[10px] text-slate-500">SERVICE</span>
-              <p class="font-bold text-white">payment-orchestrator-v2</p>
-            </div>
-            <div class="p-3 bg-ops-black border border-ops-border space-y-1">
-              <span class="text-[10px] text-slate-500">FAILURE SIGNATURE</span>
-              <p class="font-bold text-ops-crimson">HTTP 504 Gateway Timeout (P99 &gt; 840ms)</p>
-            </div>
-            <div class="p-3 bg-ops-black border border-ops-border space-y-1">
-              <span class="text-[10px] text-slate-500">ROOT CAUSE HYPOTHESIS (System 2 Gemini 3.8 Flash)</span>
-              <p class="text-slate-300">Stale connection pool exhaustion in downstream postgres-replica caused thread starvation in payment-orchestrator worker pods.</p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Terminal CLI Stream -->
-        <div class="col-span-2 bg-ops-black border border-ops-cyan/30 p-5 space-y-3">
-          <div class="flex justify-between items-center pb-2 border-b border-ops-border">
-            <span class="text-xs font-bold text-ops-cyan uppercase tracking-widest">&gt;_ Live Execution Console (root@aegis-sre-core)</span>
-            <span class="text-[10px] text-slate-500">LangGraph interrupt() Gate Active</span>
-          </div>
-
-          <div class="p-4 bg-[#030305] border border-ops-border text-xs text-ops-cyan/90 leading-relaxed font-mono space-y-2 h-72 overflow-y-auto">
-            <p><span class="text-slate-500">[03:41:02]</span> <span class="text-ops-amber">&gt;&gt; INGESTION:</span> Alert received: payment-orchestrator P99 latency breached 800ms threshold.</p>
-            <p><span class="text-slate-500">[03:41:03]</span> <span class="text-ops-cyan">&gt;&gt; SYSTEM 1:</span> Querying dynamic SkillBank for matching fingerprint... <span class="text-ops-amber">[NO DIRECT MATCH]</span></p>
-            <p><span class="text-slate-500">[03:41:04]</span> <span class="text-ops-green">&gt;&gt; SYSTEM 2:</span> Escalating to Gemini 3.8 Flash causal reasoner across microservice DAG...</p>
-            <p><span class="text-slate-500">[03:41:05]</span> <span class="text-white">&gt;&gt; DIAGNOSIS:</span> payment-orchestrator thread starvation due to postgres connection pool lock.</p>
-            <p><span class="text-slate-500">[03:41:06]</span> <span class="text-ops-amber">&gt;&gt; PROPOSAL:</span> Trigger circuit breaker on payment-orchestrator &amp; restart downstream read-replica pool.</p>
-            <p><span class="text-slate-500">[03:41:07]</span> <span class="text-ops-cyan">&gt;&gt; BLAST RADIUS:</span> Impact 2 pods (6.2% of cluster traffic). Safe threshold: APPROVED.</p>
-            <p><span class="text-slate-500">[03:41:08]</span> <span class="text-ops-crimson font-bold">&gt;&gt; HITL CHECKPOINT:</span> Execution paused at LangGraph interrupt(). Awaiting human SRE sign-off.</p>
-          </div>
-
-          <!-- SRE Human Control Actions -->
-          <div class="flex items-center justify-between pt-2">
-            <div class="text-xs text-slate-400">
-              <span class="text-ops-cyan">&gt; Operator:</span> Varad Ganjoo (Lead SRE)
-            </div>
-            <div class="flex space-x-2">
-              <button onclick="overrideSRE()" class="px-4 py-2 border border-ops-amber text-ops-amber font-bold text-xs uppercase hover:bg-ops-amber/10">
-                Override Proposal
-              </button>
-              <button onclick="approveSRE()" id="btn-approve-sre" class="px-5 py-2 bg-ops-cyan text-ops-black font-black text-xs uppercase hover:bg-ops-cyanDim">
-                Approve &amp; Remediate
-              </button>
-            </div>
-          </div>
-        </div>
+    <!-- TOPOLOGY -->
+    <section id="page_topology" class="hidden rounded-md border border-ops-line bg-ops-surface">
+      <h2 class="px-5 py-3 border-b border-ops-line font-semibold">Cluster topology</h2>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left">
+          <thead class="text-xs text-ops-muted">
+            <tr class="border-b border-ops-line">
+              <th class="px-5 py-2 font-normal">Service</th><th class="px-3 py-2 font-normal">Kind</th>
+              <th class="px-3 py-2 font-normal">Replicas</th><th class="px-3 py-2 font-normal">Depends on</th>
+              <th class="px-5 py-2 font-normal">Called by</th>
+            </tr>
+          </thead>
+          <tbody id="topologyRows" class="divide-y divide-ops-line"></tbody>
+        </table>
       </div>
     </section>
 
-    <!-- PAGE 2: SERVICE MESH TOPOLOGY -->
-    <section id="page_topology" class="hidden space-y-6">
-      <div class="bg-ops-panel border border-ops-border p-6 space-y-4">
-        <div class="flex justify-between items-center pb-2 border-b border-ops-border">
-          <span class="text-xs font-bold text-ops-cyan uppercase tracking-widest">&gt; Microservice Dependency DAG &amp; Cascading Blast Graph</span>
-          <span class="text-xs text-slate-400">6 Nodes • 8 Edges</span>
-        </div>
-
-        <div class="grid grid-cols-4 gap-4 text-xs">
-          <div class="p-4 bg-ops-black border border-ops-border space-y-1">
-            <span class="text-[10px] text-slate-500">API GATEWAY</span>
-            <p class="font-bold text-white">ingress-nginx</p>
-            <p class="text-[11px] text-ops-green">Status: Normal (200 OK)</p>
-          </div>
-          <div class="p-4 bg-ops-black border border-ops-crimson space-y-1">
-            <span class="text-[10px] text-ops-crimson font-bold">DOWNSTREAM SERVICE [FAILING]</span>
-            <p class="font-bold text-ops-crimson">payment-orchestrator</p>
-            <p class="text-[11px] text-ops-crimson">Status: 504 Timeouts (P99 840ms)</p>
-          </div>
-          <div class="p-4 bg-ops-black border border-ops-amber space-y-1">
-            <span class="text-[10px] text-ops-amber font-bold">DATABASE LAYER [STARVED]</span>
-            <p class="font-bold text-white">postgres-replica-01</p>
-            <p class="text-[11px] text-ops-amber">Pool: 98/100 Connections Used</p>
-          </div>
-          <div class="p-4 bg-ops-black border border-ops-border space-y-1">
-            <span class="text-[10px] text-slate-500">CACHE LAYER</span>
-            <p class="font-bold text-white">redis-cluster-cache</p>
-            <p class="text-[11px] text-ops-green">Hit Ratio: 94.2%</p>
-          </div>
-        </div>
-      </div>
+    <!-- SKILLS -->
+    <section id="page_skills" class="hidden space-y-3">
+      <p class="text-ops-muted max-w-[90ch]">Skills are data: trigger conditions on specific services, paired with one allowlisted action. Learned skills come from SRE overrides and are checked before built-ins.</p>
+      <div class="grid gap-3 md:grid-cols-2" id="skillList"></div>
     </section>
 
-    <!-- PAGE 3: BLAST RADIUS GUARD -->
-    <section id="page_blastradius" class="hidden space-y-6">
-      <div class="bg-ops-panel border border-ops-border p-6 space-y-4">
-        <div class="flex justify-between items-center pb-2 border-b border-ops-border">
-          <span class="text-xs font-bold text-ops-cyan uppercase tracking-widest">&gt; Deterministic Blast Radius Safety Guardrail</span>
-          <span class="px-2 py-0.5 text-[10px] bg-ops-green/10 text-ops-green border border-ops-green/40">INVARIANT ENFORCED</span>
-        </div>
-
-        <div id="blastAlertContainer" class="p-4 bg-ops-black border border-ops-crimson/50 text-xs space-y-2">
-          <div class="flex items-center space-x-2 text-ops-crimson font-bold">
-            <i class="fa-solid fa-ban"></i>
-            <span>DETERMINISTIC INVARIANT: STATEFUL POD RESTART INTERCEPTED</span>
-          </div>
-          <p class="text-slate-300">Naive restart on <code>postgres-primary</code> was physically blocked by the Blast Radius Guard. Direct restarts on primary database nodes are strictly prohibited to prevent split-brain state and uncommitted transaction loss.</p>
-        </div>
+    <!-- MEMORY -->
+    <section id="page_memory" class="hidden grid gap-6 lg:grid-cols-2 items-start">
+      <div class="rounded-md border border-ops-line bg-ops-surface">
+        <h2 class="px-5 py-3 border-b border-ops-line font-semibold">Institutional rules</h2>
+        <ul class="divide-y divide-ops-line" id="invariantList"></ul>
+      </div>
+      <div class="rounded-md border border-ops-line bg-ops-surface">
+        <h2 class="px-5 py-3 border-b border-ops-line font-semibold">Recent incidents</h2>
+        <ul class="divide-y divide-ops-line" id="episodeList"></ul>
       </div>
     </section>
-
-    <!-- PAGE 4: DYNAMIC SKILLBANK -->
-    <section id="page_skillbank" class="hidden space-y-6">
-      <div class="bg-ops-panel border border-ops-border p-6 space-y-4">
-        <div class="flex justify-between items-center pb-2 border-b border-ops-border">
-          <span class="text-xs font-bold text-ops-cyan uppercase tracking-widest">&gt; Dynamic SkillBank // Code-as-Skill Sandbox</span>
-          <span class="text-xs text-ops-cyan">4 Verified Executable Skills</span>
-        </div>
-
-        <div class="p-4 bg-ops-black border border-ops-border font-mono text-xs text-slate-300 space-y-1">
-          <span class="text-ops-amber text-[10px] font-bold"># Synthesized Skill: learned_sre_mitigation_payment_orchestrator.py</span>
-          <p class="text-ops-cyan">def execute_remediation(cluster_context: dict) -&gt; dict:</p>
-          <p class="pl-4">"""Autonomously synthesized Python skill with AST security validation."""</p>
-          <p class="pl-4">trip_circuit_breaker(service="payment-orchestrator", threshold=0.15)</p>
-          <p class="pl-4">recycle_connection_pool(target="postgres-replica-01", grace_period_sec=5)</p>
-          <p class="pl-4">return {"status": "SUCCESS", "traffic_preserved": 0.938}</p>
-        </div>
-      </div>
-    </section>
-
-    <!-- PAGE 5: REFLEXION & INSTITUTIONAL MEMORY -->
-    <section id="page_postmortems" class="hidden space-y-6">
-      <div class="bg-ops-panel border border-ops-border p-6 space-y-4">
-        <div class="flex justify-between items-center pb-2 border-b border-ops-border">
-          <span class="text-xs font-bold text-ops-cyan uppercase tracking-widest">&gt; Reflexion Episodic Memory (ExpeL Kernel)</span>
-          <span class="text-xs text-ops-cyan">Zero Repeated Outages</span>
-        </div>
-
-        <div class="p-4 bg-ops-black border border-ops-border space-y-2 text-xs">
-          <span class="text-ops-amber font-bold">Institutional Invariant Registered from SRE Override:</span>
-          <p class="text-slate-300">"When payment-orchestrator times out during peak hours (&gt;1000 RPS), NEVER restart the primary DB node. Always trip the circuit breaker and recycle replica connection pool first."</p>
-          <div class="flex items-center space-x-4 text-[11px] text-slate-500 pt-1">
-            <span>Author: Varad Ganjoo (Lead SRE)</span>
-            <span>•</span>
-            <span>Timestamp: 2026-09-15 19:19:40</span>
-            <span>•</span>
-            <span class="text-ops-green font-bold">Permanent Policy Active</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
   </main>
 
   <script>
-    function switchTab(tabId) {
-      const tabs = ['warroom', 'topology', 'blastradius', 'skillbank', 'postmortems'];
-      tabs.forEach(t => {
-        const page = document.getElementById('page_' + t);
-        const btn = document.getElementById('tab_' + t);
-        if (t === tabId) {
-          page.classList.remove('hidden');
-          btn.className = 'px-3 py-1.5 font-bold uppercase tracking-wider transition bg-ops-cyan text-ops-black';
-        } else {
-          page.classList.add('hidden');
-          btn.className = 'px-3 py-1.5 font-bold uppercase tracking-wider transition text-slate-400 hover:text-white hover:bg-ops-panel';
-        }
+    const TABS = ['incident', 'topology', 'skills', 'memory'];
+    const state = { incidents: [], topology: null, actions: [], active: null, runs: {}, tab: 'incident' };
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const label = (v) => String(v).replace(/_/g, ' ');
+    const params = (p) => Object.entries(p || {}).map(([k, v]) => `${label(k)} ${v}`).join(', ') || 'defaults';
+    const RISK = { low: 'text-ops-ok border-ops-ok/40', medium: 'text-ops-accent border-ops-accent/40', high: 'text-ops-high border-ops-high/40', critical: 'text-ops-crit border-ops-crit/50' };
+    const SEVERITY = { critical: 'text-ops-crit', high: 'text-ops-high', medium: 'text-ops-accent', low: 'text-ops-muted' };
+    const MODE = { system1: 'Skill match', system2_llm: 'LLM diagnosis', system2_rules_fallback: 'Rules fallback' };
+    const chip = (text, cls = 'text-ops-muted border-ops-line') => `<span class="inline-flex items-center px-2 py-0.5 rounded-md border text-xs ${cls}">${esc(text)}</span>`;
+    const panel = (title, body, extra = '') => `
+      <div class="rounded-md border border-ops-line bg-ops-surface ${extra}">
+        <h3 class="px-5 py-3 border-b border-ops-line font-semibold flex items-center justify-between gap-3">${title}</h3>
+        <div class="p-5 space-y-3">${body}</div>
+      </div>`;
+
+    async function api(path, options) {
+      const res = await fetch(path, options);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = Array.isArray(body.detail) ? body.detail.map((d) => `${(d.loc || []).slice(-1)[0] || ''} ${d.msg}`).join('; ') : body.detail;
+        throw Object.assign(new Error(detail || res.statusText), { status: res.status });
+      }
+      return body;
+    }
+
+    function switchTab(tab) {
+      state.tab = tab;
+      TABS.forEach((t) => $('page_' + t).classList.toggle('hidden', t !== tab));
+      document.querySelectorAll('#tabs button').forEach((b) => {
+        const on = b.dataset.tab === tab;
+        b.className = 'h-9 px-3 rounded-md whitespace-nowrap ' + (on ? 'bg-ops-raised text-ops-text' : 'text-ops-muted hover:text-ops-text');
+        b.setAttribute('aria-current', on ? 'page' : 'false');
+        b.onclick = () => switchTab(b.dataset.tab);
       });
+      if (tab === 'skills') loadSkills();
+      if (tab === 'memory') loadMemory();
     }
 
-    function selectIncident(incId) {
-      alert('Switching active incident stream to: ' + incId);
+    async function init() {
+      api('/health').then((h) => {
+        $('modelStatus').textContent = h.models.length || h.backup
+          ? 'Model: ' + [...h.models.map((m) => m.replace('gemini-', 'Gemini ').replace('-flash', '')), h.backup && h.backup.replace('groq/openai/', 'Groq ')].filter(Boolean).join(', ')
+          : 'No model key: rules only';
+      }).catch(() => {});
+      try {
+        [state.incidents, state.topology, state.actions] = await Promise.all([api('/api/incidents'), api('/api/topology'), api('/api/actions')]);
+      } catch (err) {
+        $('loadError').textContent = 'Could not load the console: ' + err.message;
+        $('loadError').classList.remove('hidden');
+        return;
+      }
+      renderTopology();
+      selectIncident(state.incidents[0].incident_id);
     }
 
-    function approveSRE() {
-      alert('SRE Authorization Confirmed. Resuming LangGraph state machine via Command(resume)... Remediation executed.');
+    // ---------------------------------------------------------------- incidents
+
+    function renderIncidentList() {
+      $('incidentList').innerHTML = state.incidents.map((i) => {
+        const a = i.alert, on = i.incident_id === state.active, run = state.runs[i.incident_id];
+        const status = run && run.data ? (run.data.awaiting_approval ? 'awaiting SRE decision' : run.data.status.replace(/_/g, ' ')) : '';
+        return `
+          <button onclick="selectIncident('${esc(i.incident_id)}')" aria-pressed="${on}"
+            class="w-full text-left rounded-md border px-4 py-3 space-y-1 ${on ? 'border-ops-accent/60 bg-ops-raised' : 'border-ops-line bg-ops-surface hover:border-ops-muted'}">
+            <span class="flex items-center justify-between gap-2">
+              <span class="font-mono text-xs text-ops-muted">${esc(i.incident_id)}</span>
+              <span class="text-xs font-semibold uppercase ${SEVERITY[a.severity]}">${esc(a.severity)}</span>
+            </span>
+            <span class="block font-semibold">${esc(i.title)}</span>
+            <span class="block font-mono text-xs text-ops-muted">${esc(a.service)} ${esc(a.metric)} ${a.value} / ${a.threshold}</span>
+            ${status ? `<span class="block text-xs text-ops-accent">${esc(status)}</span>` : ''}
+          </button>`;
+      }).join('');
     }
 
-    function overrideSRE() {
-      alert('SRE Override triggered. Escalating to Reflexion engine for institutional policy synthesis.');
+    function selectIncident(id) {
+      state.active = id;
+      renderIncidentList();
+      renderRun();
     }
+
+    function renderRun() {
+      const incident = state.incidents.find((i) => i.incident_id === state.active);
+      const run = state.runs[state.active] || {};
+      const panelEl = $('runPanel');
+      const header = `
+        <div class="flex flex-wrap items-start justify-between gap-4">
+          <div class="max-w-[75ch]">
+            <h1 class="text-xl font-semibold">${esc(incident.title)}</h1>
+            <p class="text-ops-muted mt-1">${esc(incident.alert.description)}</p>
+          </div>
+          <button onclick="diagnose()" ${run.loading ? 'disabled' : ''} class="h-9 px-4 rounded-md bg-ops-accent text-ops-bg font-semibold flex items-center gap-2 hover:brightness-110">
+            <i class="ph ph-stethoscope"></i>${run.data ? 'Diagnose again' : 'Diagnose'}
+          </button>
+        </div>`;
+      if (run.loading) {
+        panelEl.innerHTML = header + panel('Diagnosing', '<div class="skeleton h-4 w-2/3"></div><div class="skeleton h-4 w-1/2"></div><div class="skeleton h-4 w-3/4"></div>');
+        return;
+      }
+      if (run.error) {
+        panelEl.innerHTML = header + `<div role="alert" class="rounded-md border border-ops-crit px-4 py-3 text-ops-crit">${esc(run.error)}</div>`;
+        return;
+      }
+      if (!run.data) {
+        panelEl.innerHTML = header + panel('Workflow', '<p class="text-ops-muted">Run a diagnosis to see the workflow: skill match or LLM diagnosis, the blast-radius guard, and the SRE decision.</p>');
+        return;
+      }
+      const d = run.data, a = d.proposed_action, br = d.blast_radius;
+      const steps = `<ol class="space-y-2">${d.steps.map((s) => `<li class="flex gap-3"><i class="ph ph-caret-right text-ops-accent mt-0.5"></i><span>${esc(s)}</span></li>`).join('')}</ol>`;
+      const diagnosis = `
+        <div class="flex flex-wrap gap-2">${chip(MODE[d.cognition_mode] || d.cognition_mode, 'text-ops-accent border-ops-accent/40')}${d.confidence != null ? chip('confidence ' + Number(d.confidence).toFixed(2)) : ''}</div>
+        <p class="max-w-[90ch]">${esc(d.root_cause_hypothesis)}</p>
+        ${(d.evidence || []).length ? `<ul class="list-disc ml-5 text-ops-muted space-y-1">${d.evidence.map((e) => `<li>${esc(e)}</li>`).join('')}</ul>` : ''}
+        ${d.diagnosis_note ? `<p class="text-xs text-ops-muted">${esc(d.diagnosis_note)}</p>` : ''}`;
+      const action = `
+        <p class="font-mono"><span class="text-ops-accent">${esc(label(a.action_type))}</span> on ${esc(a.target_service)} <span class="text-ops-muted">(${esc(params(a.parameters))})</span></p>
+        <p class="text-ops-muted max-w-[90ch]">${esc(a.rationale)}</p>
+        <p class="text-xs text-ops-muted">Rollback: ${esc(a.rollback_plan)}</p>`;
+      const guard = `
+        <div class="flex flex-wrap gap-2">${chip('risk ' + br.risk_level, RISK[br.risk_level])}${chip(br.user_traffic_pct + '% of traffic')}${chip(br.impacted_pods_count + ' of ' + br.total_pods_count + ' pods')}</div>
+        <p class="text-xs text-ops-muted">Impact path: ${br.impacted_services.map(esc).join(', ')}</p>
+        ${br.reasons.length ? `<ul class="space-y-1">${br.reasons.map((r) => `<li class="flex gap-2"><i class="ph ph-warning text-ops-high mt-0.5"></i><span>${esc(r)}</span></li>`).join('')}</ul>` : ''}`;
+      panelEl.innerHTML = header +
+        `<div class="grid gap-6 xl:grid-cols-2">${panel('Diagnosis', diagnosis)}${panel('Proposed action', action)}</div>` +
+        panel(`Blast radius <span class="text-xs font-normal text-ops-muted">${br.requires_sre_approval ? 'SRE approval required' : 'within automatic limits'}</span>`, guard) +
+        (d.awaiting_approval ? panel('SRE decision', decisionForm(a, run)) : outcome(d)) +
+        panel('Workflow', steps);
+      if (d.awaiting_approval) renderOverrideFields();
+    }
+
+    function outcome(d) {
+      const ok = d.status === 'resolved';
+      const tone = ok ? 'text-ops-ok' : d.status === 'rejected_by_sre' ? 'text-ops-muted' : 'text-ops-high';
+      const r = d.reflexion, skill = d.learned_skill;
+      const learned = r ? `
+        <div class="pt-3 border-t border-ops-line space-y-2">
+          <p class="font-semibold">Learned</p>
+          <p>Rule for ${esc(r.proposed_action.split(' on ').pop())}: <span class="text-ops-muted">${esc(r.extracted_invariant)}</span></p>
+          ${r.forbidden_actions.length ? `<p class="text-xs text-ops-muted">Now forbidden there: ${r.forbidden_actions.map((x) => esc(label(x))).join(', ')}</p>` : ''}
+          ${skill ? `<p class="text-xs text-ops-muted">New skill <span class="font-mono text-ops-text">${esc(skill.name)}</span>: ${esc(label(skill.action_type))} on ${esc(skill.target_service || 'the alerting service')} when ${skill.conditions.map((c) => esc(`${c.metric} ${c.comparator} ${c.threshold}`)).join(' or ')}.</p>` : ''}
+        </div>` : '';
+      return panel('Outcome', `<p class="font-semibold ${tone}">${esc(d.status.replace(/_/g, ' '))}</p><p class="font-mono text-xs">${esc(d.execution_result)}</p>${learned}`);
+    }
+
+    function decisionForm(a, run) {
+      const types = state.actions.map((x) => `<option value="${esc(x.action_type)}">${esc(label(x.action_type))}</option>`).join('');
+      return `
+        <p class="text-ops-muted">The graph is paused at <code class="font-mono">interrupt()</code>. Approve the proposal, reject it, or replace it with a different allowlisted action.</p>
+        <div class="grid gap-4 md:grid-cols-2">
+          <div class="grid gap-1.5">
+            <label for="ovType" class="text-xs text-ops-muted">Override action</label>
+            <select id="ovType" onchange="renderOverrideFields()" class="h-9 rounded-md bg-ops-bg border border-ops-line px-2">${types}</select>
+          </div>
+          <div class="grid gap-1.5">
+            <label for="ovTarget" class="text-xs text-ops-muted">Target service</label>
+            <select id="ovTarget" class="h-9 rounded-md bg-ops-bg border border-ops-line px-2"></select>
+          </div>
+        </div>
+        <div class="grid gap-4 md:grid-cols-3" id="ovParams"></div>
+        <div class="grid gap-1.5">
+          <label for="ovNotes" class="text-xs text-ops-muted">Notes (stored as a rule and shown to the model as context)</label>
+          <textarea id="ovNotes" rows="2" maxlength="1000" class="rounded-md bg-ops-bg border border-ops-line px-3 py-2"></textarea>
+        </div>
+        <div class="flex flex-wrap gap-3">
+          <button onclick="decide('approve')" data-decide class="h-9 px-4 rounded-md bg-ops-accent text-ops-bg font-semibold">Approve proposal</button>
+          <button onclick="decide('override')" data-decide class="h-9 px-4 rounded-md border border-ops-high text-ops-high font-semibold hover:bg-ops-high/10">Run override</button>
+          <button onclick="decide('reject')" data-decide class="h-9 px-4 rounded-md border border-ops-line text-ops-muted hover:text-ops-text">Reject</button>
+        </div>
+        <p id="decisionError" role="alert" class="${run.decisionError ? '' : 'hidden'} text-ops-crit">${esc(run.decisionError || '')}</p>`;
+    }
+
+    function renderOverrideFields() {
+      const type = $('ovType').value;
+      const spec = state.actions.find((x) => x.action_type === type);
+      const services = Object.values(state.topology.services).filter((s) => !spec.stateful_only || s.is_stateful)
+        .filter((s) => type !== 'database_failover' || s.type === 'database');
+      const current = $('ovTarget').value;
+      $('ovTarget').innerHTML = services.map((s) => `<option value="${esc(s.name)}" ${s.name === current ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
+      $('ovParams').innerHTML = Object.entries(spec.parameters).map(([name, schema]) => {
+        const options = schema.enum || (schema.anyOf || []).flatMap((x) => x.enum || []);
+        const input = options.length
+          ? `<select id="ovp_${name}" class="h-9 rounded-md bg-ops-bg border border-ops-line px-2">${options.map((o) => `<option ${o === schema.default ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`
+          : `<input id="ovp_${name}" type="number" step="any" placeholder="${schema.default ?? ''}" class="h-9 rounded-md bg-ops-bg border border-ops-line px-2 font-mono" />`;
+        return `<div class="grid gap-1.5"><label for="ovp_${name}" class="text-xs text-ops-muted">${esc(label(name))}${schema.default != null ? ` (default ${esc(schema.default)})` : ''}</label>${input}</div>`;
+      }).join('');
+    }
+
+    async function diagnose() {
+      const id = state.active;
+      state.runs[id] = { loading: true };
+      renderRun();
+      try {
+        state.runs[id] = { data: await api(`/api/incidents/${id}/diagnose`, { method: 'POST' }) };
+      } catch (err) {
+        state.runs[id] = { error: err.message };
+      }
+      renderIncidentList();
+      if (state.active === id) renderRun();
+    }
+
+    async function decide(decision) {
+      const id = state.active, run = state.runs[id];
+      const body = { thread_id: run.data.thread_id, decision, notes: $('ovNotes').value.trim() || null };
+      if (decision === 'override') {
+        const type = $('ovType').value;
+        const spec = state.actions.find((x) => x.action_type === type);
+        const parameters = {};
+        for (const name of Object.keys(spec.parameters)) {
+          const raw = $('ovp_' + name).value;
+          if (raw !== '') parameters[name] = $('ovp_' + name).tagName === 'SELECT' ? raw : Number(raw);
+        }
+        body.override = { action_type: type, target_service: $('ovTarget').value, parameters };
+      }
+      document.querySelectorAll('[data-decide]').forEach((b) => (b.disabled = true));
+      try {
+        state.runs[id] = { data: await api(`/api/incidents/${id}/resume`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) };
+      } catch (err) {
+        if (err.status === 409) state.runs[id] = { error: err.message };
+        else run.decisionError = err.message;
+      }
+      renderIncidentList();
+      renderRun();
+    }
+
+    // ---------------------------------------------------------------- other tabs
+
+    function renderTopology() {
+      const services = Object.values(state.topology.services);
+      const callers = (name) => services.filter((s) => s.dependencies.includes(name)).map((s) => s.name);
+      $('topologyRows').innerHTML = services.map((s) => `
+        <tr>
+          <td class="px-5 py-3 font-mono">${esc(s.name)}</td>
+          <td class="px-3 py-3">${esc(s.type)}${s.is_stateful ? ' ' + chip('stateful', 'text-ops-high border-ops-high/40') : ''}</td>
+          <td class="px-3 py-3 font-mono">${s.replicas}</td>
+          <td class="px-3 py-3 text-ops-muted">${s.dependencies.map(esc).join(', ') || 'none'}</td>
+          <td class="px-5 py-3 text-ops-muted">${callers(s.name).map(esc).join(', ') || 'external traffic'}</td>
+        </tr>`).join('');
+    }
+
+    async function loadSkills() {
+      $('skillList').innerHTML = '<div class="skeleton h-28"></div><div class="skeleton h-28"></div>';
+      const skills = await api('/api/skills').catch((err) => ($('skillList').textContent = err.message, null));
+      if (!skills) return;
+      $('skillList').innerHTML = skills.map((s) => `
+        <div class="rounded-md border border-ops-line bg-ops-surface p-4 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <span class="font-mono font-semibold">${esc(s.name)}</span>
+            ${chip(s.created_by === 'builtin' ? 'built-in' : 'learned', s.created_by === 'builtin' ? undefined : 'text-ops-accent border-ops-accent/40')}
+          </div>
+          <p class="text-ops-muted">${esc(s.description)}</p>
+          <p class="font-mono text-xs">when ${s.conditions.map((c) => esc(`${c.metric} ${c.comparator} ${c.threshold}`)).join(' or ')}
+            on ${s.services.length ? s.services.map(esc).join(', ') : (s.stateless_only ? 'any stateless service' : 'any service')}</p>
+          <p class="font-mono text-xs">then <span class="text-ops-accent">${esc(label(s.action_type))}</span> on ${esc(s.target_service || 'the alerting service')} (${esc(params(s.parameters))})</p>
+          <p class="text-xs text-ops-muted">Used ${s.success_count} time(s)${s.source_incident ? `, learned from ${esc(s.source_incident)}` : ''}</p>
+        </div>`).join('');
+    }
+
+    async function loadMemory() {
+      const [invariants, episodes] = await Promise.all([api('/api/memory/invariants'), api('/api/memory/episodes')]).catch((err) => {
+        $('invariantList').innerHTML = `<li class="px-5 py-3 text-ops-crit">${esc(err.message)}</li>`;
+        return [null, null];
+      });
+      if (!invariants) return;
+      $('invariantList').innerHTML = invariants.map((i) => `
+        <li class="px-5 py-3 space-y-1">
+          <p><span class="font-mono text-xs text-ops-accent">${esc(i.service)}</span> ${esc(i.rule)}</p>
+          <p class="text-xs text-ops-muted">${i.forbidden_actions.length ? 'Forbids ' + i.forbidden_actions.map((a) => esc(label(a))).join(', ') + '. ' : ''}Source: ${esc(i.source)}</p>
+        </li>`).join('');
+      $('episodeList').innerHTML = episodes.map((e) => `
+        <li class="px-5 py-3 space-y-1">
+          <p><span class="font-mono text-xs text-ops-muted">${esc(e.incident_id)}</span> ${esc(e.alert.service)} ${esc(e.alert.metric)}</p>
+          <p class="text-xs text-ops-muted">${esc(MODE[e.cognition_mode] || e.cognition_mode)}, proposed ${esc(label(e.proposed_action.action_type))}, ${esc(String(e.outcome).replace(/_/g, ' '))}</p>
+        </li>`).join('') || '<li class="px-5 py-3 text-ops-muted">No incidents handled yet on this server instance.</li>';
+    }
+
+    switchTab('incident');
+    init();
   </script>
 </body>
 </html>
