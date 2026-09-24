@@ -1,170 +1,101 @@
-# Aegis-SRE: Autonomous Incident Response & Runbook Synthesis Engine
+# Aegis-SRE: Incident Response Agent with a Human Approval Gate
 
+[![CI](https://github.com/varadganjoo/aegis-sre/actions/workflows/ci.yml/badge.svg)](https://github.com/varadganjoo/aegis-sre/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-indigo.svg)](https://github.com/langchain-ai/langgraph)
 [![Protocol: MCP](https://img.shields.io/badge/Protocol-MCP-green.svg)](https://modelcontextprotocol.io/)
-[![Design RFC](https://img.shields.io/badge/Design-RFC-blue.svg)](docs/DESIGN_RFC.md)
-[![Tests](https://img.shields.io/badge/Tests-21%20Passed%20(100%25)-emerald.svg)](tests/)
-[![License](https://img.shields.io/badge/License-MIT-gray.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-gray.svg)](LICENSE)
 
-> **Aegis-SRE** is an automated Site Reliability Engineering (SRE) incident remediation agent. It combines **fast-path heuristics (<20ms) for known failure patterns**, **Gemini 3.8 Flash causal reasoning for novel outages**, **sandboxed dynamic remediation scripts (Code-as-Skill)**, and **an institutional memory store** that indexes human SRE overrides so the system does not repeat mistakes.
+**Live demo:** [aegis-sre-snowy.vercel.app](https://aegis-sre-snowy.vercel.app)
 
----
+Aegis-SRE is an incident-response agent for a simulated microservice cluster. It matches known alert signatures to stored skills, asks an LLM to diagnose everything else, checks every proposed action against deterministic blast-radius rules, and pauses for an SRE to approve, override or reject before anything runs. When an SRE overrides or rejects a proposal, Aegis records the lesson so the next matching incident goes the way the SRE chose.
 
-## Technical Overview: Heuristics vs. Causal Reasoning in Production
+> The cluster, incidents and remediations are simulated. Nothing touches real infrastructure, and the agent never writes or runs code.
 
-While static rule-based routing works well for routine alerts, complex distributed systems outages involve cascading failures that require dependency-aware causal reasoning:
+![Known signature resolved by a stored skill](docs/images/01_known_signature_system1.png)
 
-| Capability | Static Heuristic Scripts | Aegis-SRE |
-| :--- | :--- | :--- |
-| **Response Architecture** | Static pattern match only | **Dual-Process**: Fast path (<20ms) + Gemini 3.8 Flash causal reasoner |
-| **Continuous Adaptation** | ❌ Manual runbook updates required | ✅ **Experience Store**: Records operator overrides as institutional invariants |
-| **Skill / Script Synthesis**| ❌ Fixed toolset | ✅ **Sandboxed Execution**: Synthesizes verified remediation tools with AST safety checks |
-| **Root Cause Analysis** | ❌ Single-point alert matching | ✅ **Dependency DAG Traversal**: Evaluates cascading microservice failures |
-| **Safety Governance** | ❌ Unbounded automated execution | ✅ **LangGraph `interrupt()`**: Pauses at blast-radius review gate for SRE sign-off |
-| **Stateful Infrastructure** | ❌ Risk of naive DB restarts | ✅ **Deterministic Invariants**: Code-level blocking of primary database restarts |
-
----
-
-## 🏛️ System Architecture
+## How it works
 
 ```mermaid
-flowchart TD
-    subgraph Ingestion["1. Telemetry & DAG Ingestion"]
-        Alert["Alert Stream<br/>(P99 Latency / Pool Starvation / CrashLoop)"]
-        DAG["Cluster Topology DAG<br/>(K8s Pods, DBs, Caches, Ingress)"]
-    end
-
-    subgraph DualProcess["2. Dual-Process Cognition"]
-        Sys1["System 1: Fast-Path Dispatch<br/>(Matches Pre-Verified Skill in SkillBank)"]
-        Sys2["System 2: Causal Reasoner<br/>(Gemini 3.8 Flash Hypothesis Generator)"]
-    end
-
-    subgraph Memory["3. Experiential Memory (ExpeL)"]
-        Episodic["Episodic Memory Buffer<br/>(Historical Outage Trajectories)"]
-        Invariants["Semantic Invariants Store<br/>(Institutional SRE Policies)"]
-    end
-
-    subgraph SkillGen["4. Dynamic Skill Synthesizer"]
-        Synthesizer["Code Generator<br/>(Writes new Python remediation tool)"]
-        Sandbox["AST Security & Sandbox<br/>(Blocks os.system / eval; runs unit tests)"]
-        SkillBank["Dynamic SkillBank<br/>(Registers verified executable skills)"]
-    end
-
-    subgraph HITL["5. LangGraph HITL Safety Gate"]
-        BlastRadius["Blast-Radius Guardrail<br/>(Calculates impacted pods, traffic %)"]
-        Gate["interrupt() SRE Review Gate<br/>(Pauses execution for doctor/SRE sign-off)"]
-        Reflexion["Reflexion Post-Mortem<br/>(Extracts invariant from SRE override)"]
-    end
-
-    Alert --> Sys1
-    Sys1 -->|Skill Match| BlastRadius
-    Sys1 -->|Novel Failure Mode| Sys2
-    Sys2 <--> Memory
-
-    Sys2 --> Synthesizer --> Sandbox --> SkillBank
-    SkillBank --> Sys1
-
-    Sys2 --> BlastRadius --> Gate
-    Gate -.->|"interrupt() review gate"| SRE["Human SRE Engineer"]
-    SRE -->|"Approve / Override"| Gate
-    Gate --> Reflexion --> Memory
+flowchart LR
+    A[Alert] --> S1{Stored skill matches?}
+    S1 -->|yes| G[Blast-radius guard]
+    S1 -->|no| S2[LLM diagnosis<br/>Gemini, then Groq]
+    S2 -->|valid proposal| G
+    S2 -->|missing or invalid| R[Rules fallback] --> G
+    G -->|low risk, known skill| X[Simulated execution]
+    G -->|novel or risky| H[SRE gate<br/>approve / override / reject]
+    H --> X
+    H --> L[Learn: invariant + skill]
+    L --> S1
 ```
 
----
+1. **System 1: stored skills.** A skill is data, not code: alert conditions (`metric`, comparator, threshold), the services it covers, and one action from the allowlist with typed parameters. Two built-in skills ship: scale a stateless service on CPU above 80%, and trip a circuit breaker on error rate above 10%. Skills learned from SRE overrides are checked first, and any skill whose action an invariant forbids on that service is skipped.
+2. **System 2: LLM diagnosis.** Unmatched alerts go to Gemini (`gemini-3.6-flash`, then `3.7`, then `3.8`), with Groq `openai/gpt-oss-120b` as the backup. The prompt carries the topology, the dependents of the alerting service, standing rules, forbidden actions and recent similar incidents. Operator notes from past incidents are quoted as data, and the system instruction says they are not instructions. The model returns a structured proposal that is validated against the action allowlist; if the model is unavailable or proposes something invalid, deterministic rules take over and the UI says why.
+3. **Blast-radius guard.** Deterministic rules over the dependency graph decide whether a human must approve. Anything from System 2 always goes to review.
+4. **SRE gate.** LangGraph `interrupt()` pauses the run. The console (or `POST /api/incidents/{id}/resume`) approves, rejects, or overrides with a different allowlisted action. Overrides are validated with the same code as model proposals.
+5. **Learning.** A rejection, or an override that changes the action type, adds an invariant forbidding the proposed action on that service. An override also becomes a learned skill scoped to that service and metric, so the next matching alert resolves through System 1.
 
-## 📸 Operations Console & Live Incident Telemetry
+### Actions
 
-A high-density operations console designed for incident commanders: live microservice topology graphs, terminal output streams, deterministic safety guardrails, and dynamic skill synthesizers.
+| Action | Parameters (validated) | Applies to |
+| :--- | :--- | :--- |
+| `scale_replicas` | `target_replicas` 1 to 20, or `scale_factor` 1.1 to 3.0 | any service |
+| `restart_pods` | `max_unavailable` 1 to 3 | any service |
+| `drain_traffic` | `timeout_seconds` 10 to 600 | any service |
+| `trip_circuit_breaker` | `duration_seconds` 30 to 3600 | any service |
+| `flush_cache` | `mode`: `scan_delete` or `flush_all` | stateful only |
+| `database_failover` | `mode`: `planned_switchover` or `forced` | databases only |
 
-### 1. Incident War Room & System 2 Diagnosis
-Displays active alert telemetry (Payment Orchestrator 504 Timeouts), cluster topology DAG, System 2 causal hypothesis generation, and the LangGraph state machine paused at the `interrupt()` SRE review gate.
+Unknown actions, unknown services and unexpected parameters are rejected.
 
-![Incident War Room](docs/images/01_incident_war_room_diagnosis.png)
+### Blast-radius rules
 
----
+| Rule | Risk |
+| :--- | :--- |
+| Action forbidden by a learned invariant | critical |
+| Restart or failover of a stateful service; forced failover | critical |
+| Rollback plan missing or under 10 characters | critical |
+| At least 50% of traffic in the impact path (scale-ups exempt) | critical |
+| At least 25% of traffic in the impact path (scale-ups exempt) | high |
+| `flush_all`, circuit breaking, or scaling below N+1 | high |
+| Proposal not backed by a stored skill | medium, always reviewed |
 
-### 2. Microservice Topology & Service Mesh
-Visualizes real-time dependency DAGs across Kubernetes pods, databases, caches, and ingress controllers, highlighting cascading failure paths and blast radius impact.
+Traffic exposure is 100% when the API gateway is in the impact path, 75% for a tier-1 service, otherwise the share of pods impacted. If any rule fires, the action goes to the SRE gate.
 
-![Topology & Service Mesh](docs/images/02_topology_service_mesh.png)
+![Cluster topology](docs/images/03_topology.png)
 
----
-
-### 3. Deterministic Blast-Radius Guardrail
-Demonstrates deterministic safety invariants: naive restarts on stateful infrastructure (`postgres-primary`) are intercepted and physically blocked by the Blast Radius Guard with a high-visibility warning banner.
-
-![Blast Radius Guardrail](docs/images/03_blast_radius_safety_guard.png)
-
----
-
-### 4. Dynamic Skill Synthesizer (Code-as-Skill Sandbox)
-Shows real-time Python skill synthesis: when encountering a novel incident signature, the agent writes a custom mitigation script, verifies it against AST security rules, runs sandboxed unit tests, and commits it to the dynamic SkillBank.
-
-![Dynamic Skill Synthesizer](docs/images/04_dynamic_skillbank_synthesis.png)
-
----
-
-### 5. Reflexion & Institutional Memory (ExpeL Kernel)
-Demonstrates continuous self-learning: when an SRE overrides the proposal, the Reflexion engine analyzes the delta, extracts an institutional invariant, and registers a new procedural skill so the outage is never repeated.
-
-![Reflexion & Institutional Memory](docs/images/05_reflexion_institutional_memory.png)
-
----
-
-## 🧪 Verification & Test Suite (21 / 21 Passed)
-
-Run the full automated test suite:
+## Run it
 
 ```bash
-python -m pytest tests/ -v
+pip install -r requirements.txt
+cp .env.example .env   # optional: add GEMINI_API_KEY and/or GROQ_API_KEY
+uvicorn app.main:app --port 8020
 ```
 
-```
-============================= test session starts =============================
-tests/test_blast_radius.py::test_find_downstream_dependents PASSED       [  4%]
-tests/test_blast_radius.py::test_blocks_stateful_service_restart PASSED  [  9%]
-tests/test_blast_radius.py::test_detects_tier1_traffic_exposure PASSED   [ 14%]
-tests/test_blast_radius.py::test_blocks_violating_redundancy PASSED      [ 19%]
-tests/test_blast_radius.py::test_blocks_destructive_action_without_rollback_plan PASSED [ 23%]
-tests/test_graph.py::test_system1_fast_path_bypasses_deliberate_reasoning PASSED [ 28%]
-tests/test_graph.py::test_system2_pauses_at_sre_review_gate PASSED       [ 33%]
-tests/test_graph.py::test_graph_resumes_with_sre_override_and_learns PASSED [ 38%]
-tests/test_mcp.py::test_mcp_resources PASSED                             [ 42%]
-tests/test_mcp.py::test_mcp_query_service_health PASSED                  [ 47%]
-tests/test_mcp.py::test_mcp_calculate_blast_radius PASSED                [ 52%]
-tests/test_mcp.py::test_mcp_execute_skill PASSED                         [ 57%]
-tests/test_mcp.py::test_mcp_synthesize_procedural_skill PASSED           [ 61%]
-tests/test_reflexion.py::test_initial_invariants_seeded PASSED           [ 66%]
-tests/test_reflexion.py::test_reflexion_distills_override_and_synthesizes_skill PASSED [ 71%]
-tests/test_skill_bank.py::test_builtin_skills_seeded PASSED              [ 76%]
-tests/test_skill_bank.py::test_ast_blocks_os_system PASSED               [ 80%]
-tests/test_skill_bank.py::test_ast_blocks_eval_and_exec PASSED           [ 85%]
-tests/test_skill_bank.py::test_sandboxed_test_runner_passes_valid_code PASSED [ 90%]
-tests/test_skill_bank.py::test_sandboxed_test_runner_catches_assertion_error PASSED [ 95%]
-tests/test_skill_bank.py::test_dynamic_registration_and_execution PASSED [100%]
-============================= 21 passed in 1.01s ==============================
-```
+Open http://127.0.0.1:8020. Without API keys, System 2 uses the rules fallback.
 
----
+MCP server (read-only resources plus `query_service_health`, `list_allowed_actions`, `calculate_blast_radius`):
 
-## 🛠️ Quickstart
-
-### 1. Start the Aegis-SRE Platform
-```bash
-uvicorn app.main:app --port 8020 --reload
-```
-Open **[http://127.0.0.1:8020](http://127.0.0.1:8020)** in your browser.
-
-### 2. Start the MCP Server
 ```bash
 python -m mcp_server.server
 ```
 
----
+Tests (no network, no keys, nothing written to the repo):
 
-## Engineering Attribution & AI Pair-Programming
+```bash
+python -m pytest
+```
 
-This repository was developed with Gemini and Claude as AI pair-programming assistants. I designed the architecture, the blast-radius topological safety rules, and the verification test suites, and reviewed all code.
+## Limits
 
+- The cluster, alerts and execution are simulated. Real use would need a Kubernetes client behind the same allowlist and per-action dry runs.
+- Graph checkpoints, learned skills and memory live in process memory. On the serverless demo they reset when the instance recycles, and a paused run can only be resumed on the instance that started it. Set `AEGIS_STATE_DIR` to persist skills and memory as JSON locally; a shared checkpointer (Postgres, Redis) is the upgrade path for multiple instances.
+- Learned skills match on service and metric threshold only; they do not generalise across services.
+- The LLM free tiers are small (Gemini: 5 requests per minute and 20 per day per model), so the demo falls back to rules when they run out.
 
+More detail on design choices: [docs/DESIGN_RFC.md](docs/DESIGN_RFC.md).
+
+## Attribution
+
+Built with Gemini and Claude as AI pair-programming assistants. I designed the architecture, safety rules and tests, and reviewed all code.

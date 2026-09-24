@@ -44,3 +44,5 @@ Thumbs.db
 # Local secrets and state
 .env
 .aegis-state/
+
+.vercel

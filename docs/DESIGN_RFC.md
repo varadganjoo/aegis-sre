@@ -1,131 +1,64 @@
-# Aegis-SRE Design RFC: Automated Incident Response & Runbook Synthesis
+# Aegis-SRE Design Notes
 
-**Status:** Implemented  
-**Author:** Varad Ganjoo  
-**Date:** September 2026  
-**Repository:** [github.com/varadganjoo/aegis-sre](https://github.com/varadganjoo/aegis-sre)
+**Status:** Implemented (simulated cluster)
+**Author:** Varad Ganjoo
+**Updated:** September 2026
 
----
+## 1. Problem
 
-## 1. Problem Statement & Motivation
+Automated remediation is useful for known failure modes and dangerous for new ones. A fixed runbook cannot handle an outage it has not seen, and an LLM with cluster access can take an action nobody would approve, such as restarting a primary database. Aegis explores a middle path: let a model propose, let deterministic code decide what is safe, and let a human make the call whenever either is unsure.
 
-Modern distributed microservice architectures are prone to non-linear cascading failures (e.g., connection pool starvation, thread exhaustion, cache stampedes). Static rule-based alerts and hardcoded remediation scripts are effective for known failure modes but fail when encountering novel failure topologies. Conversely, deploying unconstrained LLMs with direct cluster execution privileges introduces severe operational risks (e.g., inadvertently restarting primary database nodes or executing unchecked shell commands).
+## 2. Goals and non-goals
 
-**Aegis-SRE** is designed around three engineering principles:
-1. **Dual-Process Remediation**: Known incidents match pre-verified runbooks in `<20ms` (Fast Path). Novel, multi-hop outages escalate to Gemini 3.8 Flash for causal hypothesis generation across microservice dependency DAGs.
-2. **Deterministic Safety Invariants**: Code-level guards calculate the blast radius of any proposed action. Destructive operations on stateful services (e.g., `postgres-primary`) are blocked deterministically.
-3. **Sandboxed Code-as-Skill Synthesis**: When a novel incident requires a custom mitigation script, the agent synthesizes Python code, verifies it against an AST security allowlist (blocking `os.system`, `subprocess`, `eval`), runs unit tests, and commits the skill to a dynamic SkillBank.
-4. **Human-in-the-Loop (HITL) Checkpoints**: LangGraph state machines pause at `interrupt()` gates before high-blast-radius execution. When an operator overrides the proposal, the system logs the override to prevent repeating the mistake.
+Goals:
+- Resolve known alert signatures without a model call.
+- Get a dependency-aware diagnosis from an LLM for everything else, and never act on it without review.
+- Make every action checkable before it runs: a closed set of actions with bounded parameters.
+- Learn from SRE decisions so the same wrong proposal does not come back.
 
----
+Non-goals:
+- Real cluster access. Execution is simulated and returns a log line.
+- Generating or running code. An earlier version synthesised Python remediation scripts and filtered them with an AST blocklist. Blocklists over a general-purpose language are hard to make complete, and operator notes could reach the generated source, so that design was removed.
 
-## 2. System Architecture
+## 3. Decisions
 
-```mermaid
-flowchart TD
-    subgraph Ingestion["1. Telemetry & DAG Ingestion"]
-        Alert["Alert Stream<br/>(P99 Latency / Pool Starvation / CrashLoop)"]
-        DAG["Cluster Topology DAG<br/>(K8s Pods, DBs, Caches, Ingress)"]
-    end
+### 3.1 Skills are data
+A skill is a record: conditions (`metric`, comparator, threshold), the services it covers, whether it is limited to stateless services, one action type and its parameters. Matching is a threshold comparison, never string matching or evaluation. Registering a skill runs the same validator as a model proposal, so a skill cannot hold an action the system would refuse to run.
 
-    subgraph DualProcess["2. Dual-Process Cognition"]
-        Sys1["System 1: Fast-Path Dispatch<br/>(Matches Pre-Verified Skill in SkillBank)"]
-        Sys2["System 2: Causal Reasoner<br/>(Gemini 3.8 Flash Hypothesis Generator)"]
-    end
+### 3.2 One validator for every source of actions
+Model proposals, SRE overrides, stored skills and MCP tool calls all pass through `app/actions.validate_action`: the action must be in the allowlist, the target must exist in the topology, stateful-only actions need a stateful target, failover needs a database, and parameters must match a strict pydantic model (`extra="forbid"`, numeric bounds). Anything else is rejected with a readable error.
 
-    subgraph Memory["3. Experiential Memory Store"]
-        Episodic["Episodic Memory Buffer<br/>(Historical Outage Trajectories)"]
-        Invariants["Semantic Invariants Store<br/>(Institutional SRE Policies)"]
-    end
+### 3.3 The model proposes, code gates
+The model returns a structured `DiagnosisProposal` (hypothesis, evidence, action, parameters, rollback, confidence). Only the parameters of the chosen action are kept. If the model is unreachable, over quota, or proposes something invalid, deterministic rules produce a conservative action instead (drain traffic for stateful services, scale out otherwise) and the reason is shown. Model output is never treated as trusted: every System 2 proposal goes to the SRE gate regardless of its blast radius.
 
-    subgraph SkillGen["4. Dynamic Skill Synthesizer"]
-        Synthesizer["Code Generator<br/>(Writes new Python remediation tool)"]
-        Sandbox["AST Security & Sandbox<br/>(Blocks os.system / eval; runs unit tests)"]
-        SkillBank["Dynamic SkillBank<br/>(Registers verified executable skills)"]
-    end
+Operator notes from earlier incidents are passed to the model JSON-quoted inside the history section, and the system instruction says notes are data. They are stored and displayed as text only.
 
-    subgraph HITL["5. LangGraph HITL Safety Gate"]
-        BlastRadius["Blast-Radius Guardrail<br/>(Calculates impacted pods, traffic %)"]
-        Gate["interrupt() SRE Review Gate<br/>(Pauses execution for operator sign-off)"]
-        Reflexion["Reflexion Post-Mortem<br/>(Extracts invariant from SRE override)"]
-    end
+### 3.4 Blast radius is deterministic
+`app/blast_radius.py` walks the dependency graph (cycle-safe) to find every service that depends on the target, estimates traffic exposure, and applies fixed rules: learned invariants, stateful restarts and failovers, forced failover, `flush_all`, circuit breaking, loss of N+1 redundancy, traffic thresholds, and a minimum rollback plan. Scale-ups are exempt from the traffic rules because adding capacity interrupts nobody. Risk levels are compared by rank, not by name.
 
-    Alert --> Sys1
-    Sys1 -->|Skill Match| BlastRadius
-    Sys1 -->|Novel Failure Mode| Sys2
-    Sys2 <--> Memory
+### 3.5 Human gate with LangGraph interrupts
+The graph (`ingest -> system1 -> system2 -> guard -> sre_gate -> execute -> learn`) uses a typed state so each node merges a partial update. `sre_gate` calls `interrupt()` with the proposal and blast radius; the API resumes it with `Command(resume=...)`. Each diagnosis runs on its own thread id, so two runs of the same incident never share state.
 
-    Sys2 --> Synthesizer --> Sandbox --> SkillBank
-    SkillBank --> Sys1
+### 3.6 Learning from decisions
+- **Reject:** add an invariant forbidding the proposed action type on that service.
+- **Override with a different action type:** same invariant, plus a learned skill (service scope, the alert's metric at its threshold, the SRE's action and target). Learned skills are matched before built-ins.
+- **Override that only changes parameters:** learned skill and a rule note, but nothing is forbidden; the action type was right.
 
-    Sys2 --> BlastRadius --> Gate
-    Gate -.->|"interrupt() review gate"| SRE["Human SRE Engineer"]
-    SRE -->|"Approve / Override"| Gate
-    Gate --> Reflexion --> Memory
-```
+Invariants also veto matching skills, so a learned "never do X here" beats a built-in skill that would do X.
 
----
+## 4. Threat model
 
-## 3. Core Subsystems & Safety Invariants
+| Risk | Mitigation |
+| :--- | :--- |
+| Model proposes a destructive or out-of-scope action | Allowlist, strict parameter bounds, blast-radius rules, mandatory review for System 2 |
+| Prompt injection through alert text or operator notes | Notes are JSON-quoted data; model output is validated; nothing is executed from text |
+| Operator override with bad input | Same validator as model proposals; the run stays paused on a 422 |
+| Learned skill drifts beyond its incident | Skills are scoped to one service and one metric threshold; invariants can veto them |
+| Model outage | Gemini fallback chain, then Groq, then deterministic rules |
 
-### 3.1 Deterministic Blast-Radius & Stateful Service Guard
-Automated remediation engines must not perform uncoordinated restarts on stateful infrastructure. Aegis-SRE models the cluster topology as a directed acyclic graph $G = (V, E)$, where $V$ represents microservices, databases, and message brokers.
+## 5. Limits and next steps
 
-Before any action is staged:
-1. The engine computes the downstream transitive closure of impacted nodes.
-2. If any impacted node is flagged as stateful (`postgres-primary`, `kafka-broker`, `etcd`), the action is blocked in code:
-   ```python
-   # app/blast_radius.py
-   if target_node.is_stateful and action.type == "restart":
-       return BlastRadiusEvaluation(
-           passed=False,
-           reason="Deterministic invariant: Direct restart of stateful primary node is prohibited.",
-           requires_human_override=True
-       )
-   ```
-
-### 3.2 AST Security Sandboxing
-Dynamic remediation scripts must pass strict AST inspection before execution:
-```python
-# app/skill_bank.py
-FORBIDDEN_AST_NODES = {"os.system", "subprocess.Popen", "eval", "exec", "shutil.rmtree"}
-```
-Any script attempting unauthorized system calls or network sockets outside the Kubernetes API client is rejected and quarantined.
-
-### 3.3 Experiential Learning from Operator Overrides
-When an incident commander overrides the agent's proposed plan, Aegis-SRE analyzes the diff between the proposed action $a_{\text{agent}}$ and the human intervention $a_{\text{human}}$:
-1. Generalizes an institutional policy rule (e.g. "Do not restart cache during peak traffic; trip circuit breaker instead").
-2. Registers the rule into the memory store.
-3. Ensures future occurrences of the same failure signature automatically route to the human-approved pattern.
-
----
-
-## 4. Operations Console & Telemetry
-
-A high-density operations console provides real-time visibility into cluster state, dependency graphs, and agent reasoning:
-
-1. **Incident War Room & System 2 Diagnosis**:
-![Incident War Room](images/01_incident_war_room_diagnosis.png)
-
-2. **Microservice Topology & Service Mesh**:
-![Topology & Mesh](images/02_topology_service_mesh.png)
-
-3. **Deterministic Blast-Radius Guardrail**:
-![Blast Radius Guardrail](images/03_blast_radius_safety_guard.png)
-
-4. **Dynamic Skill Synthesizer (Code-as-Skill Sandbox)**:
-![Dynamic Skill Synthesizer](images/04_dynamic_skillbank_synthesis.png)
-
-5. **Reflexion & Institutional Memory (ExpeL Kernel)**:
-![Reflexion & Institutional Memory](images/05_reflexion_institutional_memory.png)
-
----
-
-## 5. Automated Verification
-
-Aegis-SRE was validated across 21 test scenarios:
-1. **DAG Traversal**: Correct calculation of transitive downstream dependencies for payment and database services.
-2. **Stateful Service Protection**: 100% deterministic interception of restart attempts on primary database nodes.
-3. **AST Sandbox Security**: Rejection of injected malicious payloads (`os.system`, `eval`).
-4. **LangGraph StateGraph**: Pausing at `interrupt()` and resumption via `Command(resume=...)`.
-5. **Memory Adaptation**: Verification that an operator override updates policy store and prevents repeat proposal.
+- State is in process memory. A shared checkpointer (Postgres or Redis) and a skills table would be needed for more than one instance.
+- Execution is simulated. A real executor would sit behind the same validator, run a dry run first, and record the rollback it would need.
+- Learned skills do not generalise across services; clustering similar incidents is the obvious next step.
+- There is no evaluation set of labelled incidents yet, so diagnosis quality is not measured.
