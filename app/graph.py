@@ -1,336 +1,228 @@
-"""LangGraph StateGraph for Aegis-SRE Autonomous Incident Response Platform.
-Implements Dual-Process Cognition (System 1 vs System 2), Dynamic Skill Synthesis,
-Blast-Radius Safety Guardrails, and LangGraph interrupt() Human-in-the-Loop gates.
+"""LangGraph incident workflow: triage, diagnosis, blast-radius guard, SRE review gate, simulated execution,
+and reflexion.
+
+    ingest -> system1 (learned/builtin skill?) --match--> guard
+                                               --miss---> system2 (LLM, validated; rules fallback) -> guard
+    guard -> sre_gate (interrupt() when approval is required) -> execute (simulated) -> reflexion -> END
 """
 
-from typing import Any, Dict, Optional
+from __future__ import annotations
+
+import uuid
+from typing import Any, Dict, List, Optional
+
+from typing_extensions import TypedDict
+
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
-from langgraph.types import Command, interrupt
+from langgraph.types import interrupt
 
+from app import actions
 from app.blast_radius import BlastRadiusGuard
+from app.diagnosis import diagnose
 from app.memory import ExperientialMemoryKernel
 from app.reflexion import ReflexionEngine
 from app.schemas import (
-    ActionType,
     Alert,
     ClusterTopology,
-    IncidentState,
     IncidentStatus,
     RemediationAction,
-    RiskLevel,
     ServiceNode,
-    ServiceStatus,
     ServiceType,
 )
 from app.skill_bank import DynamicSkillBank
 
 
+class IncidentGraphState(TypedDict, total=False):
+    """One channel per key, so each node returns only the keys it changes."""
+
+    incident_id: str
+    alert: Any
+    status: str
+    steps: List[str]
+    cognition_mode: str
+    proposed_action: Any
+    root_cause_hypothesis: str
+    evidence: List[str]
+    confidence: Optional[float]
+    diagnosis_note: str
+    blast_radius: Any
+    decision: str
+    override: Any
+    sre_notes: Optional[str]
+    execution_result: str
+    reflexion: Any
+    learned_skill: Any
+
+
 def get_default_topology() -> ClusterTopology:
-    """Returns a realistic enterprise microservices cluster topology."""
-    services = {
-        "api-gateway": ServiceNode(
-            name="api-gateway",
-            type=ServiceType.GATEWAY,
-            replicas=4,
-            ready_replicas=4,
-            dependencies=["auth-service", "checkout-service", "inventory-service"],
-        ),
-        "auth-service": ServiceNode(
-            name="auth-service",
-            type=ServiceType.SERVICE,
-            replicas=3,
-            ready_replicas=3,
-            dependencies=["redis-cluster", "postgres-primary"],
-        ),
-        "checkout-service": ServiceNode(
-            name="checkout-service",
-            type=ServiceType.SERVICE,
-            replicas=4,
-            ready_replicas=4,
-            dependencies=["payment-orchestrator", "redis-cluster", "inventory-service"],
-        ),
-        "payment-orchestrator": ServiceNode(
-            name="payment-orchestrator",
-            type=ServiceType.SERVICE,
-            replicas=2,
-            ready_replicas=2,
-            dependencies=["postgres-primary"],
-        ),
-        "inventory-service": ServiceNode(
-            name="inventory-service",
-            type=ServiceType.SERVICE,
-            replicas=3,
-            ready_replicas=3,
-            dependencies=["postgres-primary"],
-        ),
-        "redis-cluster": ServiceNode(
-            name="redis-cluster",
-            type=ServiceType.CACHE,
-            replicas=3,
-            ready_replicas=3,
-            is_stateful=True,
-        ),
-        "postgres-primary": ServiceNode(
-            name="postgres-primary",
-            type=ServiceType.DATABASE,
-            replicas=1,
-            ready_replicas=1,
-            is_stateful=True,
-        ),
-    }
-    return ClusterTopology(services=services)
+    """A small microservices cluster: gateway -> services -> cache and database."""
+
+    def svc(name, kind, replicas, deps=(), stateful=False):
+        return ServiceNode(name=name, type=kind, replicas=replicas, ready_replicas=replicas, dependencies=list(deps), is_stateful=stateful)
+
+    services = [
+        svc("api-gateway", ServiceType.GATEWAY, 4, ["auth-service", "checkout-service", "inventory-service"]),
+        svc("auth-service", ServiceType.SERVICE, 3, ["redis-cluster", "postgres-primary"]),
+        svc("checkout-service", ServiceType.SERVICE, 4, ["payment-orchestrator", "redis-cluster", "inventory-service"]),
+        svc("payment-orchestrator", ServiceType.SERVICE, 2, ["postgres-primary"]),
+        svc("inventory-service", ServiceType.SERVICE, 3, ["postgres-primary"]),
+        svc("redis-cluster", ServiceType.CACHE, 3, stateful=True),
+        svc("postgres-primary", ServiceType.DATABASE, 1, stateful=True),
+    ]
+    return ClusterTopology(services={s.name: s for s in services})
 
 
-# Initialize components
-skill_bank = DynamicSkillBank()
-memory_kernel = ExperientialMemoryKernel()
-reflexion_engine = ReflexionEngine(skill_bank)
-default_topology = get_default_topology()
+class AegisRuntime:
+    """One topology, skill bank, memory, and compiled graph. The app uses one; tests build fresh ones."""
 
+    def __init__(self, topology: Optional[ClusterTopology] = None, skill_bank=None, memory=None):
+        self.topology = topology or get_default_topology()
+        self.skill_bank = skill_bank or DynamicSkillBank(self.topology)
+        self.memory = memory or ExperientialMemoryKernel()
+        self.reflexion = ReflexionEngine(self.skill_bank, self.memory)
+        self.graph = self._build()
 
-# --- LangGraph Node Implementations ---
+    # ---------------------------------------------------------------- nodes
 
-def ingest_telemetry_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Ingests alert and initializes incident state."""
-    raw_alert = state.get("alert")
-    if isinstance(raw_alert, dict):
-        alert = Alert(**raw_alert)
-    else:
-        alert = raw_alert
+    def ingest(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        alert = Alert(**state["alert"]) if isinstance(state["alert"], dict) else state["alert"]
+        if alert.service not in self.topology.services:
+            raise ValueError(f"Alert service '{alert.service}' is not in the topology.")
+        return {
+            "alert": alert,
+            "status": IncidentStatus.INVESTIGATING.value,
+            "steps": [f"Ingested {alert.alert_id}: {alert.service} {alert.metric}={alert.value} (threshold {alert.threshold})."],
+        }
 
-    state["alert"] = alert
-    state["title"] = f"Incident: {alert.severity.value.upper()} on {alert.service} ({alert.metric})"
-    state["investigation_steps"] = [f"Ingested alert {alert.alert_id} for service '{alert.service}'."]
-    state["status"] = IncidentStatus.INVESTIGATING.value
-    return state
-
-
-def system1_triage_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """System 1: Checks for pre-learned procedural skills in SkillBank (Fast Path)."""
-    alert: Alert = state["alert"]
-    matched_skill = skill_bank.match_skill_for_alert(alert)
-
-    # Check if there are learned invariants that forbid fast-path
-    invariants = memory_kernel.query_invariants_for_service(alert.service)
-
-    if matched_skill and not any("Never" in inv for inv in invariants):
-        state["cognition_mode"] = "system1_fast_path"
-        state["investigation_steps"].append(
-            f"System 1 Match: Identified verified procedural skill '{matched_skill.name}'. Bypassing deliberate LLM reasoning."
-        )
-        state["root_cause_hypothesis"] = f"Known metric signature matching skill '{matched_skill.name}'."
-        state["proposed_action"] = RemediationAction(
-            action_id=f"act-{alert.alert_id}",
-            action_type=ActionType.CUSTOM_SKILL,
-            target_service=alert.service,
-            parameters={"skill_name": matched_skill.name},
-            risk_level=RiskLevel.LOW,
-            rationale=f"System 1 fast-path execution of verified skill '{matched_skill.name}'.",
-            rollback_plan=f"Revert state changes applied by {matched_skill.name}.",
-            skill_name=matched_skill.name,
-        )
-    else:
-        state["cognition_mode"] = "system2_deliberate"
-        state["investigation_steps"].append(
-            "System 1 Miss: No pre-learned skill matched or institutional invariant requires deliberate analysis. Activating System 2 Causal Reasoner."
-        )
-
-    return state
-
-
-def route_cognition_mode(state: Dict[str, Any]) -> str:
-    """Routes to either System 1 fast execution or System 2 deliberate reasoning."""
-    if state.get("cognition_mode") == "system1_fast_path":
-        return "blast_radius_guard"
-    return "system2_diagnose"
-
-
-def system2_diagnose_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """System 2: Deep causal reasoning, invariant retrieval, and novel remediation formulation."""
-    alert: Alert = state["alert"]
-    invariants = memory_kernel.query_invariants_for_service(alert.service)
-    similar_episodes = memory_kernel.query_similar_episodes(alert)
-
-    state["investigation_steps"].append(
-        f"System 2 Reasoning: Retrieved {len(invariants)} institutional invariants and {len(similar_episodes)} historical episodes."
-    )
-
-    # Formulate hypothesis and remediation based on topology & metrics
-    target_node = default_topology.services.get(alert.service)
-    is_stateful = target_node.is_stateful if target_node else False
-
-    if is_stateful:
-        state["root_cause_hypothesis"] = (
-            f"Stateful infrastructure degradation on {alert.service}. "
-            f"Direct restart is strictly forbidden by institutional invariant. Requires graceful failover or pool drain."
-        )
+    def system1(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        alert: Alert = state["alert"]
+        forbidden = self.memory.forbidden_actions_for(alert.service)
+        skill = self.skill_bank.match_skill_for_alert(alert, forbidden)
+        if not skill:
+            note = " (learned invariants vetoed a matching skill)" if forbidden and self.skill_bank.match_skill_for_alert(alert) else ""
+            return {"cognition_mode": "system2", "steps": state["steps"] + [f"System 1: no skill matched{note}; escalating to diagnosis."]}
+        target = skill.target_service or alert.service
+        condition = next(c for c in skill.conditions if c.matches(alert.metric, alert.value))
         action = RemediationAction(
-            action_id=f"act-{alert.alert_id}",
-            action_type=ActionType.DRAIN,
-            target_service=alert.service,
-            parameters={"drain_timeout_seconds": 60, "graceful": True},
-            risk_level=RiskLevel.CRITICAL,
-            rationale=f"Graceful drain and connection shed for stateful {alert.service} to prevent split-brain.",
-            rollback_plan="Re-enable ingress traffic routing and restore connection pool limits.",
+            action_id=f"act-{uuid.uuid4().hex[:8]}",
+            action_type=skill.action_type,
+            target_service=target,
+            parameters=skill.parameters,
+            rationale=f"Skill '{skill.name}': {skill.description}",
+            rollback_plan=f"Reverse the {skill.action_type.value} on {target} if {alert.metric} has not recovered within 10 minutes.",
+            skill_name=skill.name,
         )
-    else:
-        state["root_cause_hypothesis"] = (
-            f"Cascading upstream load or memory leak on {alert.service} causing {alert.metric} spike to {alert.value}."
-        )
-        action = RemediationAction(
-            action_id=f"act-{alert.alert_id}",
-            action_type=ActionType.SCALE,
-            target_service=alert.service,
-            parameters={"target_replicas": 6},
-            risk_level=RiskLevel.MEDIUM,
-            rationale=f"Scale {alert.service} from {target_node.replicas if target_node else 2} to 6 replicas to absorb traffic surge.",
-            rollback_plan=f"Scale back {alert.service} to baseline {target_node.replicas if target_node else 2} replicas once latency drops below threshold.",
-        )
+        return {
+            "cognition_mode": "system1",
+            "proposed_action": action,
+            "root_cause_hypothesis": f"Known signature: {alert.metric} {condition.comparator} {condition.threshold} matches skill '{skill.name}'.",
+            "steps": state["steps"] + [f"System 1: matched skill '{skill.name}' ({skill.created_by})."],
+        }
 
-    state["proposed_action"] = action
-    return state
+    def system2(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        alert: Alert = state["alert"]
+        invariants = self.memory.invariants_for(alert.service)
+        episodes = self.memory.similar_episodes(alert)
+        result = diagnose(alert, self.topology, invariants, episodes, self.memory.forbidden_actions_for(alert.service))
+        return {
+            "cognition_mode": result.mode,
+            "proposed_action": result.action,
+            "root_cause_hypothesis": result.hypothesis,
+            "evidence": result.evidence,
+            "confidence": result.confidence,
+            "diagnosis_note": result.note,
+            "steps": state["steps"] + [
+                f"System 2: {len(invariants)} rule(s) and {len(episodes)} similar incident(s) in context. {result.note}"
+            ],
+        }
 
-
-def blast_radius_guard_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Calculates blast radius and enforces deterministic safety invariants."""
-    action: RemediationAction = state["proposed_action"]
-    blast_radius = BlastRadiusGuard.evaluate(action, default_topology)
-    state["blast_radius"] = blast_radius
-    state["investigation_steps"].append(
-        f"Blast Radius Evaluated: Risk={blast_radius.risk_level.value.upper()}, Impacted Services={blast_radius.impacted_services}, Traffic={blast_radius.user_traffic_pct}%."
-    )
-    return state
-
-
-def sre_review_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """LangGraph interrupt() gate: Pauses execution if action requires SRE authorization."""
-    blast_radius: BlastRadius = state["blast_radius"]
-
-    if blast_radius.requires_sre_approval:
-        state["status"] = IncidentStatus.AWAITING_APPROVAL.value
-        state["investigation_steps"].append(
-            f"HITL Gate: Paused at SRE review gate. Reasons: {'; '.join(blast_radius.reasons)}"
-        )
-
-        # Interrupt the graph and yield control to the SRE
-        resume_data = interrupt({
-            "incident_id": state.get("incident_id"),
-            "proposed_action": state["proposed_action"].model_dump() if state.get("proposed_action") else None,
-            "blast_radius": blast_radius.model_dump(),
-            "invariants": memory_kernel.query_invariants_for_service(state["alert"].service),
-        })
-
-        # When resumed via Command(resume=...)
-        state["sre_approved"] = resume_data.get("approved", True)
-        state["sre_override_notes"] = resume_data.get("override_notes")
-        state["sre_override_action"] = resume_data.get("override_action")
-    else:
-        state["sre_approved"] = True
-
-    return state
-
-
-def execute_remediation_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Executes the approved remediation or records an SRE override."""
-    is_approved = state.get("sre_approved", True)
-    override_notes = state.get("sre_override_notes")
-    override_action = state.get("sre_override_action")
-
-    if not is_approved or override_notes:
-        state["status"] = IncidentStatus.OVERRIDDEN.value
-        action_name = override_action or "manual_sre_intervention"
-        state["execution_result"] = f"SRE Overrode proposal: {override_notes}. Executed: {action_name}"
-        state["investigation_steps"].append(f"SRE Override Applied: {state['execution_result']}")
-    else:
-        state["status"] = IncidentStatus.RESOLVED.value
+    def guard(self, state: Dict[str, Any]) -> Dict[str, Any]:
         action: RemediationAction = state["proposed_action"]
-        if action.action_type == ActionType.CUSTOM_SKILL and action.skill_name:
-            result = skill_bank.execute_skill(action.skill_name, {"service": action.target_service})
-            state["execution_result"] = result.get("log", "Skill executed successfully.")
-        else:
-            state["execution_result"] = f"Successfully executed {action.action_type.value} on {action.target_service}."
-        state["investigation_steps"].append(f"Remediation Executed: {state['execution_result']}")
+        forbidden = self.memory.forbidden_actions_for(action.target_service)
+        # Only verified skills may run without review; LLM and fallback proposals always go to an SRE.
+        radius = BlastRadiusGuard.evaluate(action, self.topology, forbidden, novel=state["cognition_mode"] != "system1")
+        return {
+            "blast_radius": radius,
+            "steps": state["steps"] + [
+                f"Guard: risk {radius.risk_level.value}, {radius.user_traffic_pct}% of traffic, "
+                f"{'SRE approval required' if radius.requires_sre_approval else 'within automatic limits'}."
+            ],
+        }
 
-    return state
+    def sre_gate(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        if not state["blast_radius"].requires_sre_approval:
+            return {"decision": "auto"}
+        response = interrupt({
+            "incident_id": state["incident_id"],
+            "proposed_action": state["proposed_action"].model_dump(mode="json"),
+            "blast_radius": state["blast_radius"].model_dump(mode="json"),
+            "invariants": [i.model_dump(mode="json") for i in self.memory.invariants_for(state["alert"].service)],
+        })
+        # The API validates the response; the override action is re-validated here all the same.
+        override = response.get("override")
+        if override:
+            override = RemediationAction(**override)
+            override.parameters = actions.validate_action(override.action_type, override.target_service, override.parameters, self.topology)
+        return {"decision": response["decision"], "override": override, "sre_notes": response.get("notes")}
 
+    def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        decision = state["decision"]
+        if decision == "reject":
+            return {"status": IncidentStatus.REJECTED.value, "execution_result": "Rejected by SRE; nothing was executed.",
+                    "steps": state["steps"] + ["SRE rejected the proposal."]}
+        action: RemediationAction = state["override"] if decision == "override" else state["proposed_action"]
+        log = actions.simulate(action.action_type, action.target_service, action.parameters, self.topology)
+        if decision != "override" and action.skill_name:
+            self.skill_bank.record_success(action.skill_name)
+        status = IncidentStatus.OVERRIDDEN if decision == "override" else IncidentStatus.RESOLVED
+        who = {"auto": "Executed automatically", "approve": "Approved by SRE", "override": "SRE override executed"}[decision]
+        return {"status": status.value, "execution_result": log, "steps": state["steps"] + [f"{who}: {log}"]}
 
-def reflexion_learning_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Reflexion: If overridden, extracts institutional invariants and synthesizes a new skill."""
-    override_notes = state.get("sre_override_notes")
-    override_action = state.get("sre_override_action", "manual_sre_intervention")
+    def learn(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        update: Dict[str, Any] = {}
+        if state["decision"] in ("override", "reject"):
+            trace, skill, invariant = self.reflexion.learn(
+                incident_id=state["incident_id"],
+                alert=state["alert"],
+                proposed=state["proposed_action"],
+                hypothesis=state.get("root_cause_hypothesis", ""),
+                notes=state.get("sre_notes"),
+                override=state.get("override"),
+            )
+            update = {
+                "reflexion": trace,
+                "learned_skill": skill,
+                "steps": state["steps"] + [
+                    "Reflexion: recorded invariant"
+                    + (f" forbidding {', '.join(a.value for a in trace.forbidden_actions)}" if trace.forbidden_actions else "")
+                    + (f" and learned skill '{skill.name}'." if skill else ".")
+                ],
+            }
+        self.memory.record_episode({
+            "incident_id": state["incident_id"],
+            "alert": state["alert"].model_dump(mode="json"),
+            "cognition_mode": state["cognition_mode"],
+            "proposed_action": state["proposed_action"].model_dump(mode="json"),
+            "outcome": state["status"],
+            "sre_notes": state.get("sre_notes"),
+        })
+        return update
 
-    # Build IncidentState object for memory recording
-    incident_state = IncidentState(
-        incident_id=state.get("incident_id", "inc-001"),
-        title=state.get("title", "Incident"),
-        alert=state["alert"],
-        status=IncidentStatus(state["status"]),
-        cognition_mode=state.get("cognition_mode", "system2_deliberate"),
-        root_cause_hypothesis=state.get("root_cause_hypothesis"),
-        investigation_steps=state.get("investigation_steps", []),
-        proposed_action=state.get("proposed_action"),
-        blast_radius=state.get("blast_radius"),
-        sre_approved=state.get("sre_approved"),
-        sre_override_notes=override_notes,
-        execution_result=state.get("execution_result"),
-    )
+    # ---------------------------------------------------------------- graph
 
-    if override_notes:
-        trace, new_skill = reflexion_engine.analyze_override(
-            state=incident_state,
-            sre_override_notes=override_notes,
-            actual_action_taken=override_action,
-        )
-        incident_state.reflexion = trace
-        incident_state.synthesized_skill = new_skill
-        state["reflexion"] = trace
-        state["synthesized_skill"] = new_skill
-        state["investigation_steps"].append(
-            f"Reflexion Complete: Synthesized new skill '{trace.synthesized_skill_name}' and extracted invariant: '{trace.extracted_invariant}'."
-        )
-
-    # Record episode in permanent memory kernel
-    memory_kernel.record_episode(incident_state)
-    return state
-
-
-# --- Build LangGraph StateGraph ---
-
-def build_aegis_graph() -> Any:
-    workflow = StateGraph(dict)
-
-    workflow.add_node("ingest_telemetry", ingest_telemetry_node)
-    workflow.add_node("system1_triage", system1_triage_node)
-    workflow.add_node("system2_diagnose", system2_diagnose_node)
-    workflow.add_node("blast_radius_guard", blast_radius_guard_node)
-    workflow.add_node("sre_review_gate", sre_review_gate_node)
-    workflow.add_node("execute_remediation", execute_remediation_node)
-    workflow.add_node("reflexion_learning", reflexion_learning_node)
-
-    workflow.set_entry_point("ingest_telemetry")
-
-    workflow.add_edge("ingest_telemetry", "system1_triage")
-
-    workflow.add_conditional_edges(
-        "system1_triage",
-        route_cognition_mode,
-        {
-            "blast_radius_guard": "blast_radius_guard",
-            "system2_diagnose": "system2_diagnose",
-        },
-    )
-
-    workflow.add_edge("system2_diagnose", "blast_radius_guard")
-    workflow.add_edge("blast_radius_guard", "sre_review_gate")
-    workflow.add_edge("sre_review_gate", "execute_remediation")
-    workflow.add_edge("execute_remediation", "reflexion_learning")
-    workflow.add_edge("reflexion_learning", END)
-
-    # Compile with durable memory saver
-    checkpointer = MemorySaver()
-    return workflow.compile(checkpointer=checkpointer)
-
-
-# Compiled graph instance
-aegis_graph = build_aegis_graph()
+    def _build(self):
+        g = StateGraph(IncidentGraphState)
+        for name in ("ingest", "system1", "system2", "guard", "sre_gate", "execute", "learn"):
+            g.add_node(name, getattr(self, name))
+        g.set_entry_point("ingest")
+        g.add_edge("ingest", "system1")
+        g.add_conditional_edges("system1", lambda s: "guard" if s["cognition_mode"] == "system1" else "system2",
+                                {"guard": "guard", "system2": "system2"})
+        g.add_edge("system2", "guard")
+        g.add_edge("guard", "sre_gate")
+        g.add_edge("sre_gate", "execute")
+        g.add_edge("execute", "learn")
+        g.add_edge("learn", END)
+        # ponytail: in-memory checkpoints; paused incidents are lost on restart. Use a Postgres checkpointer to keep them.
+        return g.compile(checkpointer=MemorySaver())

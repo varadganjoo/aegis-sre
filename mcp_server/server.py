@@ -1,49 +1,59 @@
-"""Model Context Protocol (MCP) Server for Aegis-SRE.
-Exposes cluster topology resources, dynamic skills, and incident diagnostic tools over protocol.
+"""Model Context Protocol server for Aegis-SRE.
+
+Read-only resources (topology, skills, invariants) and tools that evaluate actions without executing them.
+There is no tool that runs or registers code: actions come from the same allowlist the API enforces.
 """
 
+from __future__ import annotations
+
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
 from mcp.server.mcpserver import MCPServer
 
+from app import actions
 from app.blast_radius import BlastRadiusGuard
-from app.graph import default_topology, memory_kernel, skill_bank
-from app.schemas import ActionType, Alert, AlertSeverity, RemediationAction, RiskLevel
+from app.graph import AegisRuntime
+from app.schemas import ActionType, RemediationAction
 
-# Initialize MCP server
 mcp = MCPServer("aegis-sre-mcp")
+runtime = AegisRuntime()
 
-
-# --- Resources ---
 
 @mcp.resource("sre://topology")
 def get_topology_resource() -> str:
-    """Returns the live Kubernetes cluster topology as JSON."""
-    return default_topology.model_dump_json(indent=2)
+    """The cluster topology as JSON."""
+    return runtime.topology.model_dump_json(indent=2)
 
 
 @mcp.resource("sre://skills")
 def get_skills_resource() -> str:
-    """Returns all registered procedural skills in the dynamic SkillBank."""
-    skills = [s.model_dump() for s in skill_bank.list_skills()]
-    return json.dumps(skills, indent=2)
+    """Procedural skills (trigger conditions and allowlisted actions) as JSON."""
+    return json.dumps([s.model_dump(mode="json") for s in runtime.skill_bank.list_skills()], indent=2)
 
 
 @mcp.resource("sre://invariants")
 def get_invariants_resource() -> str:
-    """Returns institutional SRE invariants learned over time."""
-    return json.dumps(memory_kernel.invariants, indent=2)
+    """Institutional rules, including actions forbidden per service, as JSON."""
+    return json.dumps([i.model_dump(mode="json") for i in runtime.memory.invariants], indent=2)
 
-
-# --- Tools ---
 
 @mcp.tool()
 def query_service_health(service_name: str) -> Dict[str, Any]:
-    """Queries health, metrics, and dependencies for a specific microservice."""
-    node = default_topology.services.get(service_name)
+    """Replicas, dependencies, and statefulness for one service."""
+    node = runtime.topology.services.get(service_name)
     if not node:
-        return {"error": f"Service '{service_name}' not found in cluster."}
-    return node.model_dump()
+        return {"error": f"Service '{service_name}' not found."}
+    return node.model_dump(mode="json")
+
+
+@mcp.tool()
+def list_allowed_actions() -> list[Dict[str, Any]]:
+    """The remediation allowlist and each action's parameter schema."""
+    return [
+        {"action_type": a.value, "stateful_only": a in actions.STATEFUL_ONLY, "parameters": m.model_json_schema().get("properties", {})}
+        for a, m in actions.PARAMS.items()
+    ]
 
 
 @mcp.tool()
@@ -51,54 +61,20 @@ def calculate_blast_radius(
     target_service: str,
     action_type: str,
     rollback_plan: str,
+    parameters: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Calculates the blast radius and safety risk for a proposed remediation action."""
+    """Validates a proposed action and returns its blast radius. Nothing is executed."""
     try:
-        act_type = ActionType(action_type)
-    except ValueError:
-        act_type = ActionType.CUSTOM_SKILL
-
+        kind = ActionType(action_type)
+        params = actions.validate_action(kind, target_service, parameters or {}, runtime.topology)
+    except (ValueError, actions.InvalidAction) as exc:
+        return {"error": str(exc)}
     action = RemediationAction(
-        action_id="mcp-eval-01",
-        action_type=act_type,
-        target_service=target_service,
-        rationale="MCP requested blast-radius evaluation",
-        rollback_plan=rollback_plan,
+        action_id="mcp-eval", action_type=kind, target_service=target_service, parameters=params,
+        rationale="MCP blast-radius evaluation", rollback_plan=rollback_plan,
     )
-    result = BlastRadiusGuard.evaluate(action, default_topology)
-    return result.model_dump()
-
-
-@mcp.tool()
-def execute_skill(skill_name: str, service: str) -> Dict[str, Any]:
-    """Executes a verified procedural skill from the SkillBank."""
-    try:
-        return skill_bank.execute_skill(skill_name, {"service": service})
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@mcp.tool()
-def synthesize_procedural_skill(
-    name: str,
-    description: str,
-    trigger_pattern: str,
-    code: str,
-    test_code: str,
-) -> Dict[str, Any]:
-    """Validates code via AST inspection, executes sandboxed tests, and registers a new skill."""
-    try:
-        skill = skill_bank.register_skill(
-            name=name,
-            description=description,
-            trigger_pattern=trigger_pattern,
-            code=code,
-            test_code=test_code,
-            created_by="mcp-client",
-        )
-        return {"success": True, "skill": skill.model_dump()}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    forbidden = runtime.memory.forbidden_actions_for(target_service)
+    return BlastRadiusGuard.evaluate(action, runtime.topology, forbidden).model_dump(mode="json")
 
 
 if __name__ == "__main__":

@@ -1,12 +1,20 @@
-"""Data models and schemas for Aegis-SRE Autonomous Incident Response Platform.
-Defines telemetry, topology DAG, alerts, blast radius, skills, and reflexion models.
+"""Data models for Aegis-SRE: telemetry, topology, alerts, remediation actions, skills, invariants, and reflexion.
+
+Remediation is data, never code: every action is one of a fixed set of action types with validated parameters
+(see app/actions.py), and learned skills are records that pair trigger conditions with such an action.
 """
 
 from __future__ import annotations
+
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class ServiceType(str, Enum):
@@ -37,6 +45,15 @@ class RiskLevel(str, Enum):
     HIGH = "high"
     CRITICAL = "critical"
 
+    @property
+    def rank(self) -> int:
+        return ["low", "medium", "high", "critical"].index(self.value)
+
+    @classmethod
+    def highest(cls, *levels: "RiskLevel") -> "RiskLevel":
+        # Enum values are strings; max() on them would compare alphabetically ("low" > "high").
+        return max(levels, key=lambda level: level.rank)
+
 
 class IncidentStatus(str, Enum):
     TRIAGING = "triaging"
@@ -45,17 +62,18 @@ class IncidentStatus(str, Enum):
     MITIGATING = "mitigating"
     RESOLVED = "resolved"
     OVERRIDDEN = "overridden_by_sre"
+    REJECTED = "rejected_by_sre"
 
 
 class ActionType(str, Enum):
+    """The only remediations Aegis can propose or execute."""
+
     SCALE = "scale_replicas"
-    RESTART = "restart_pod"
+    RESTART = "restart_pods"
     DRAIN = "drain_traffic"
     CIRCUIT_BREAK = "trip_circuit_breaker"
-    CONFIG_PATCH = "patch_config"
     CACHE_FLUSH = "flush_cache"
     FAILOVER = "database_failover"
-    CUSTOM_SKILL = "execute_custom_skill"
 
 
 class ServiceNode(BaseModel):
@@ -64,18 +82,13 @@ class ServiceNode(BaseModel):
     replicas: int = 1
     ready_replicas: int = 1
     status: ServiceStatus = ServiceStatus.HEALTHY
-    cpu_utilization_pct: float = 25.0
-    memory_utilization_pct: float = 35.0
-    p99_latency_ms: float = 45.0
-    error_rate_pct: float = 0.05
     dependencies: List[str] = Field(default_factory=list)
     is_stateful: bool = False
 
 
 class ClusterTopology(BaseModel):
-    cluster_id: str = "prod-us-east-1"
+    cluster_id: str = "demo-cluster"
     services: Dict[str, ServiceNode] = Field(default_factory=dict)
-    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class Alert(BaseModel):
@@ -86,7 +99,7 @@ class Alert(BaseModel):
     threshold: float
     severity: AlertSeverity
     description: str
-    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = Field(default_factory=_now)
 
 
 class BlastRadius(BaseModel):
@@ -103,25 +116,78 @@ class RemediationAction(BaseModel):
     action_id: str
     action_type: ActionType
     target_service: str
-    parameters: Dict[str, Any] = Field(default_factory=dict)
-    risk_level: RiskLevel = RiskLevel.MEDIUM
+    parameters: Dict[str, Any] = Field(default_factory=dict)  # validated per action type in app/actions.py
     rationale: str
     rollback_plan: str
     skill_name: Optional[str] = None
 
 
+class Condition(BaseModel):
+    """One trigger condition, evaluated against an alert's metric and value."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    metric: str = Field(..., min_length=1, max_length=64)
+    comparator: Literal[">", ">=", "<", "<="] = ">="
+    threshold: float
+
+    def matches(self, metric: str, value: float) -> bool:
+        if metric != self.metric:
+            return False
+        return {
+            ">": value > self.threshold,
+            ">=": value >= self.threshold,
+            "<": value < self.threshold,
+            "<=": value <= self.threshold,
+        }[self.comparator]
+
+
 class SkillDefinition(BaseModel):
+    """A procedural skill: when these conditions hold on these services, propose this action."""
+
     skill_id: str
     name: str
     description: str
-    trigger_pattern: str
-    code: str
-    test_code: str
-    version: int = 1
+    services: List[str] = Field(default_factory=list)  # empty = any service (subject to stateless_only)
+    stateless_only: bool = False
+    conditions: List[Condition] = Field(..., min_length=1)  # any one matching condition triggers the skill
+    action_type: ActionType
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    target_service: Optional[str] = None  # None = act on the alerting service
+    created_by: Literal["builtin", "sre-override"] = "builtin"
+    source_incident: Optional[str] = None
     success_count: int = 0
-    failure_count: int = 0
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    created_by: str = "gemini-3.8-flash-synthesizer"
+    created_at: str = Field(default_factory=_now)
+
+
+class Invariant(BaseModel):
+    """An institutional rule. `forbidden_actions` are enforced by the blast-radius guard; `rule` is context."""
+
+    service: str
+    rule: str
+    forbidden_actions: List[ActionType] = Field(default_factory=list)
+    source: str = "initial_sre_policy"
+    created_at: str = Field(default_factory=_now)
+
+
+class DiagnosisProposal(BaseModel):
+    """Structured output requested from the LLM. Flat optional parameter fields keep the schema model-friendly;
+    app/actions.py turns the relevant ones into validated action parameters."""
+
+    root_cause_hypothesis: str
+    evidence: List[str]
+    action_type: ActionType
+    target_service: str
+    target_replicas: Optional[int] = None
+    scale_factor: Optional[float] = None
+    timeout_seconds: Optional[int] = None
+    duration_seconds: Optional[int] = None
+    max_unavailable: Optional[int] = None
+    cache_flush_mode: Optional[Literal["scan_delete", "flush_all"]] = None
+    failover_mode: Optional[Literal["planned_switchover", "forced"]] = None
+    rationale: str
+    rollback_plan: str
+    confidence: float = Field(..., ge=0.0, le=1.0)
 
 
 class ReflexionTrace(BaseModel):
@@ -129,28 +195,10 @@ class ReflexionTrace(BaseModel):
     alert_summary: str
     initial_hypothesis: str
     proposed_action: str
-    was_overridden: bool
+    outcome: Literal["overridden", "rejected"]
     human_override_reason: Optional[str] = None
-    applied_action: str
-    root_cause_distillation: str
+    applied_action: Optional[str] = None
     extracted_invariant: str
-    synthesized_skill_name: Optional[str] = None
-    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-
-class IncidentState(BaseModel):
-    incident_id: str
-    title: str
-    alert: Alert
-    status: IncidentStatus = IncidentStatus.TRIAGING
-    cognition_mode: str = "system1_fast_path"  # "system1_fast_path" or "system2_deliberate"
-    root_cause_hypothesis: Optional[str] = None
-    investigation_steps: List[str] = Field(default_factory=list)
-    proposed_action: Optional[RemediationAction] = None
-    blast_radius: Optional[BlastRadius] = None
-    synthesized_skill: Optional[SkillDefinition] = None
-    sre_approved: Optional[bool] = None
-    sre_override_notes: Optional[str] = None
-    execution_result: Optional[str] = None
-    reflexion: Optional[ReflexionTrace] = None
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    forbidden_actions: List[ActionType] = Field(default_factory=list)
+    learned_skill_name: Optional[str] = None
+    timestamp: str = Field(default_factory=_now)

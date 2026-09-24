@@ -1,59 +1,40 @@
-"""FastAPI Application for Aegis-SRE Autonomous Incident Response Platform.
-Serves REST APIs for incident triage, LangGraph interrupt resumption, and the dark-mode SRE Command Center.
-"""
+"""FastAPI app for Aegis-SRE: demo incidents, diagnosis runs, SRE decisions, and the operations console UI."""
 
-import os
+from __future__ import annotations
+
+import logging
+import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Literal, Optional
+
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
 from langgraph.types import Command
 
-from app.blast_radius import BlastRadiusGuard
-from app.graph import (
-    aegis_graph,
-    default_topology,
-    memory_kernel,
-    reflexion_engine,
-    skill_bank,
-)
-from app.schemas import (
-    Alert,
-    AlertSeverity,
-    ClusterTopology,
-    IncidentState,
-    IncidentStatus,
-    RemediationAction,
-    RiskLevel,
-)
+from app import actions
+from app.graph import AegisRuntime
+from app.llm import GROQ_MODEL, MODEL_CHAIN, _groq_configured, get_gemini_client
+from app.schemas import ActionType
+
+logger = logging.getLogger("aegis_sre.api")
 
 app = FastAPI(
-    title="Aegis-SRE Autonomous Incident Response Platform",
-    description="Self-Learning SRE Agent using Dual-Process Cognition, Dynamic Skill Synthesis, and LangGraph HITL Gates.",
-    version="1.0.0",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    title="Aegis-SRE",
+    description="Incident diagnosis with an LLM, deterministic blast-radius guards, SRE sign-off, and skills learned from overrides.",
+    version="2.0.0",
 )
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+runtime = AegisRuntime()
 
-# In-memory incident store
-INCIDENTS_DB: Dict[str, Dict[str, Any]] = {}
-
-# Demo Incidents
 DEMO_INCIDENTS = [
     {
         "incident_id": "INC-8491",
-        "title": "Payment Orchestrator 504 Gateway Timeouts",
+        "title": "Payment orchestrator latency spike",
         "alert": {
             "alert_id": "ALT-101",
             "service": "payment-orchestrator",
@@ -61,12 +42,12 @@ DEMO_INCIDENTS = [
             "value": 1450.0,
             "threshold": 300.0,
             "severity": "critical",
-            "description": "P99 latency surged to 1.45s across payment pods; upstream checkout-service experiencing cascading timeouts.",
+            "description": "P99 latency at 1.45s on payment pods; checkout-service is seeing cascading timeouts.",
         },
     },
     {
         "incident_id": "INC-8492",
-        "title": "Postgres Primary Replication Lag & Connection Starvation",
+        "title": "Postgres primary connection pool exhausted",
         "alert": {
             "alert_id": "ALT-102",
             "service": "postgres-primary",
@@ -74,12 +55,12 @@ DEMO_INCIDENTS = [
             "value": 98.4,
             "threshold": 80.0,
             "severity": "critical",
-            "description": "Stateful database connection pool exhausted (98.4%). Direct restart strictly blocked by institutional invariant.",
+            "description": "Connection pool at 98.4%; new connections from auth, payment and inventory are queueing.",
         },
     },
     {
         "incident_id": "INC-8493",
-        "title": "API Gateway High CPU Spike (Known Signature)",
+        "title": "API gateway CPU spike",
         "alert": {
             "alert_id": "ALT-103",
             "service": "api-gateway",
@@ -87,139 +68,143 @@ DEMO_INCIDENTS = [
             "value": 89.2,
             "threshold": 75.0,
             "severity": "high",
-            "description": "Stateless ingress CPU utilization spike due to seasonal traffic surge. Matches pre-learned HPA skill.",
+            "description": "Gateway CPU at 89% during a traffic surge; latency still within SLO.",
         },
     },
 ]
+INCIDENTS = {i["incident_id"]: i for i in DEMO_INCIDENTS}
+
+
+class OverrideAction(BaseModel):
+    action_type: ActionType
+    target_service: str = Field(..., max_length=64)
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    rollback_plan: str = Field("Reverse this action if the alert does not clear.", max_length=500)
 
 
 class ResumeRequest(BaseModel):
-    approved: bool = True
-    override_notes: Optional[str] = None
-    override_action: Optional[str] = None
+    thread_id: str = Field(..., max_length=80)
+    decision: Literal["approve", "override", "reject"]
+    override: Optional[OverrideAction] = None
+    notes: Optional[str] = Field(None, max_length=1000)
+
+
+def _summary(incident_id: str, thread_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    interrupts = state.get("__interrupt__") or ()
+    keys = [
+        "status", "cognition_mode", "root_cause_hypothesis", "evidence", "confidence", "diagnosis_note", "steps",
+        "proposed_action", "blast_radius", "decision", "sre_notes", "execution_result", "reflexion", "learned_skill",
+    ]
+    return jsonable_encoder({
+        "incident_id": incident_id,
+        "thread_id": thread_id,
+        **{k: state.get(k) for k in keys},
+        "awaiting_approval": bool(interrupts),
+    })
 
 
 @app.get("/health")
-def health_check():
+def health() -> Dict[str, Any]:
     return {
         "status": "healthy",
-        "platform": "Aegis-SRE Autonomous Incident Response",
-        "skills_count": len(skill_bank.list_skills()),
-        "invariants_count": len(memory_kernel.invariants),
+        "models": MODEL_CHAIN if get_gemini_client() else [],
+        "backup": f"groq/{GROQ_MODEL}" if _groq_configured() else None,
+        "skills": len(runtime.skill_bank.list_skills()),
+        "invariants": len(runtime.memory.invariants),
     }
 
 
 @app.get("/api/incidents")
 def list_incidents():
-    """Lists all active and demo incidents."""
     return DEMO_INCIDENTS
 
 
 @app.get("/api/topology")
 def get_topology():
-    """Returns cluster topology DAG."""
-    return default_topology.model_dump()
+    return runtime.topology.model_dump(mode="json")
+
+
+@app.get("/api/actions")
+def list_actions():
+    """The action allowlist with parameter schemas, so the UI's override form matches server validation."""
+    return [
+        {
+            "action_type": action_type.value,
+            "stateful_only": action_type in actions.STATEFUL_ONLY,
+            "parameters": model.model_json_schema().get("properties", {}),
+        }
+        for action_type, model in actions.PARAMS.items()
+    ]
 
 
 @app.get("/api/skills")
 def list_skills():
-    """Returns all procedural skills in the dynamic SkillBank."""
-    return [s.model_dump() for s in skill_bank.list_skills()]
+    return [s.model_dump(mode="json") for s in runtime.skill_bank.list_skills()]
 
 
 @app.get("/api/memory/invariants")
 def list_invariants():
-    """Returns learned institutional invariants."""
-    return memory_kernel.invariants
+    return [i.model_dump(mode="json") for i in runtime.memory.invariants]
 
 
 @app.get("/api/memory/episodes")
 def list_episodes():
-    """Returns past incident episodes."""
-    return memory_kernel.episodes
+    return list(reversed(runtime.memory.episodes[-20:]))
 
 
 @app.post("/api/incidents/{incident_id}/diagnose")
 def run_diagnosis(incident_id: str):
-    """Executes the LangGraph incident triage and diagnosis workflow."""
-    demo = next((inc for inc in DEMO_INCIDENTS if inc["incident_id"] == incident_id), None)
-    if not demo:
-        raise HTTPException(status_code=404, detail="Incident not found.")
-
-    alert = Alert(**demo["alert"])
-    config = {"configurable": {"thread_id": incident_id}}
-
-    initial_state = {
-        "incident_id": incident_id,
-        "alert": alert,
-        "title": demo["title"],
-    }
-
+    """Runs the workflow on a fresh thread. Pauses at the SRE gate when approval is required."""
+    incident = INCIDENTS.get(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found.")
+    thread_id = f"{incident_id}-{uuid.uuid4().hex[:10]}"
+    config = {"configurable": {"thread_id": thread_id}}
     try:
-        # Run graph until completion or interrupt()
-        result = aegis_graph.invoke(initial_state, config=config)
-        INCIDENTS_DB[incident_id] = result
-        return {
-            "incident_id": incident_id,
-            "status": result.get("status"),
-            "cognition_mode": result.get("cognition_mode"),
-            "root_cause_hypothesis": result.get("root_cause_hypothesis"),
-            "investigation_steps": result.get("investigation_steps", []),
-            "proposed_action": result["proposed_action"].model_dump() if result.get("proposed_action") else None,
-            "blast_radius": result["blast_radius"].model_dump() if result.get("blast_radius") else None,
-            "requires_sre_approval": result.get("blast_radius", {}).requires_sre_approval if hasattr(result.get("blast_radius"), "requires_sre_approval") else False,
-            "execution_result": result.get("execution_result"),
-            "reflexion": result["reflexion"].model_dump() if result.get("reflexion") else None,
-        }
-    except Exception as e:
-        # Check if paused at interrupt
-        state_snap = aegis_graph.get_state(config)
-        if state_snap and state_snap.tasks:
-            for task in state_snap.tasks:
-                if task.interrupts:
-                    int_val = task.interrupts[0].value
-                    return {
-                        "incident_id": incident_id,
-                        "status": "awaiting_sre_approval",
-                        "cognition_mode": state_snap.values.get("cognition_mode"),
-                        "root_cause_hypothesis": state_snap.values.get("root_cause_hypothesis"),
-                        "investigation_steps": state_snap.values.get("investigation_steps", []),
-                        "proposed_action": state_snap.values.get("proposed_action").model_dump() if state_snap.values.get("proposed_action") else None,
-                        "blast_radius": state_snap.values.get("blast_radius").model_dump() if state_snap.values.get("blast_radius") else None,
-                        "requires_sre_approval": True,
-                        "interrupt_details": int_val,
-                    }
-        raise HTTPException(status_code=500, detail=str(e))
+        state = runtime.graph.invoke({"incident_id": incident_id, "alert": incident["alert"]}, config)
+    except Exception as exc:
+        logger.exception("Diagnosis run failed")
+        raise HTTPException(status_code=500, detail=f"Diagnosis failed: {exc}") from exc
+    return _summary(incident_id, thread_id, state)
 
 
 @app.post("/api/incidents/{incident_id}/resume")
 def resume_incident(incident_id: str, body: ResumeRequest):
-    """Resumes an interrupted incident via LangGraph Command(resume=...)."""
-    config = {"configurable": {"thread_id": incident_id}}
+    if incident_id not in INCIDENTS or not body.thread_id.startswith(f"{incident_id}-"):
+        raise HTTPException(status_code=404, detail="Unknown incident or thread.")
+    config = {"configurable": {"thread_id": body.thread_id}}
+    snapshot = runtime.graph.get_state(config)
+    if not any(task.interrupts for task in snapshot.tasks):
+        raise HTTPException(
+            status_code=409,
+            detail="Nothing is waiting for a decision on this run (it was already decided, or the server restarted). Diagnose again.",
+        )
 
-    resume_payload = {
-        "approved": body.approved,
-        "override_notes": body.override_notes,
-        "override_action": body.override_action,
-    }
-
-    try:
-        result = aegis_graph.invoke(Command(resume=resume_payload), config=config)
-        INCIDENTS_DB[incident_id] = result
-        return {
-            "incident_id": incident_id,
-            "status": result.get("status"),
-            "cognition_mode": result.get("cognition_mode"),
-            "execution_result": result.get("execution_result"),
-            "investigation_steps": result.get("investigation_steps", []),
-            "reflexion": result["reflexion"].model_dump() if result.get("reflexion") else None,
-            "synthesized_skill": result["synthesized_skill"].model_dump() if result.get("synthesized_skill") else None,
+    override = None
+    if body.decision == "override":
+        if body.override is None:
+            raise HTTPException(status_code=422, detail="An override decision needs an override action.")
+        try:
+            parameters = actions.validate_action(
+                body.override.action_type, body.override.target_service, body.override.parameters, runtime.topology
+            )
+        except actions.InvalidAction as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        override = {
+            "action_id": f"override-{uuid.uuid4().hex[:8]}",
+            "action_type": body.override.action_type.value,
+            "target_service": body.override.target_service,
+            "parameters": parameters,
+            "rationale": "SRE override",
+            "rollback_plan": body.override.rollback_plan,
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to resume incident: {e}")
+
+    state = runtime.graph.invoke(
+        Command(resume={"decision": body.decision, "override": override, "notes": body.notes}), config
+    )
+    return _summary(incident_id, body.thread_id, state)
 
 
-# Serve UI
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
